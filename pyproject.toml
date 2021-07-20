@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "MPC4quantum"
+version = "0.1.0"
+description = "Model predictive control for quantum dynamics."
+authors = ["Andy Goldschmidt <andygold@uw.edu>"]
+
+
+[tool.poetry.dependencies]
+python = "^3.7"
+numpy = "^1.20.3"
+qutip = "^4.6.1"
+cvxpy = "^1.1.13"
+
+
+[tool.poetry.dev-dependencies]
+pytest = "^5.2"
+matplotlib = "^3.4.2"
+
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
