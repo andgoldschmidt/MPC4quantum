@@ -44,6 +44,10 @@ def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls):
     for t in range(n_steps):
         cost += cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]) + cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t])
         constr += [X[:, t + 1] == A_ls[t] @ X[:, t] + B_ls[t] @ U[:, t]]
+        # TODO: manual control constraints should be coded differently.
+        constr += [cp.norm(U[:, t]) <= 10]
+        if t > 1:
+            constr += [cp.norm(U[:, t] - U[:, t-1]) <= 5]
     constr += [X[:, 0] == x0]
     cost += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
@@ -91,7 +95,7 @@ def mpc(x0, u_dim, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_it
             A_ls, B_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts)
             # Catch deprecation of np.complex
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
+                warnings.simplefilter(action="ignore", category=DeprecationWarning)
                 X_opt, U_opt, _ = quad_program(xs[k], X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls)
             # iqp_exit = False
             iqp_exit = k > 0 # -- tmp. soln: Only fit first pass.
@@ -103,7 +107,8 @@ def mpc(x0, u_dim, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_it
         # -- Alternatively, close the loop with the model: model.predict(xk, krtimes(lift(uk), xk))
         us[k] = U_opt[:, 0]
         ts_k = clock.ts_step(k)
-        u_fns = interp1d(ts_k, np.vstack([us[k], us[k]]).T, fill_value='extrapolate', kind='previous', assume_sorted=True)
+        u_fns = interp1d(ts_k, np.vstack([us[k], us[k]]).T, fill_value='extrapolate', kind='previous',
+                         assume_sorted=True)
         result = experiment.simulate(experiment.proj(xs[k]), ts_k, u_fns)
         xs[k + 1] = result[:, -1]
 

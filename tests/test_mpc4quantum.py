@@ -38,13 +38,12 @@ class TestAll(TestCase):
         # ==========
         u_dim = 2
         x_dim = 4
-        order = 2
-        control_sat = 25
+        order = 1
 
         # Clock
         # =====
         n_steps = 25
-        dt = 0.01
+        dt = 0.1
         horizon = 15
         clock = StepClock(dt, horizon, n_steps)
 
