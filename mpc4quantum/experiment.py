@@ -28,10 +28,12 @@ class Experiment(ABC):
 
     @staticmethod
     def lift(x):
+        # If present, 2nd dimension of :return: should match :param: x.
         return x
 
     @staticmethod
     def proj(z):
+        # If present, 2nd dimension of :return: should match :param: z.
         return z
 
     @abstractmethod
@@ -69,14 +71,6 @@ class CExperiment(Experiment):
 
     def _f(self, t, x):
         return self.f(t, x, self.us(t)).flatten()
-
-    @staticmethod
-    def lift(x):
-        return x
-
-    @staticmethod
-    def proj(z):
-        return z
 
     def simulate(self, x0, ts, us):
         """
@@ -130,13 +124,12 @@ class VanDerPol(CExperiment):
     @staticmethod
     def lift(x):
         x1, x2 = x
-        return np.vstack([
-            x1, x2, x1 ** 2, x1 ** 2 * x2
-        ])
+        z = np.vstack([x1, x2, x1 ** 2, x1 ** 2 * x2])
+        return z if x.ndim > 1 else z.flatten()
 
     @staticmethod
     def proj(z):
-        return z[:2, :]
+        return z[:2, :] if z.ndim > 1 else z[:2]
 
 
 class Rotor(CExperiment):
@@ -167,9 +160,12 @@ def _wrap_u(u_func, index_u):
 
 def _wrap_us(us):
     if callable(us):
-        # Assume us is an interp1d object
-        u_dim = us.y.reshape(-1, len(us.x)).shape[0]
-        us = np.array([_wrap_u(us, i) for i in range(u_dim)])
+        if hasattr(us, 'y'):
+            # Assume us is an interp1d object
+            u_dim = us.y.reshape(-1, len(us.x)).shape[0]
+            us = np.array([_wrap_u(us, i) for i in range(u_dim)])
+        else:
+            raise AttributeError('QExperiment expected an interp1d object.')
     else:
         us = np.atleast_2d(us)
         u_dim = us.shape[0]

@@ -37,6 +37,7 @@ class TestAll(TestCase):
         # Parameters
         # ==========
         u_dim = 2
+        x_dim = 4
         order = 2
         control_sat = 25
 
@@ -45,7 +46,7 @@ class TestAll(TestCase):
         n_steps = 25
         dt = 0.01
         horizon = 15
-        clock = KeepTime(dt, horizon, n_steps)
+        clock = StepClock(dt, horizon, n_steps)
 
         # Experiment
         # ==========
@@ -61,7 +62,7 @@ class TestAll(TestCase):
         args = {'t0': 0, 'tf': 25, 'dt': clock.dt, 'A': 1}
         ts_train = np.arange(args['t0'], args['tf'], args['dt'])
         u = qubit.u1(ts_train, args)
-        lib_fns = lifting.create_library(order, u_dim)[1:]
+        lib_fns = create_library(order, u_dim)[1:]
         u1 = np.vstack([u, np.zeros_like(u)])
         u2 = np.vstack([np.zeros_like(u), u])
         X2 = []
@@ -73,13 +74,34 @@ class TestAll(TestCase):
             X2.append(xs_train[:, 1:])
             X1.append(xs_train[:, :-1])
             lift_us = np.vstack([f(us_train) for f in lib_fns])
-            UX1.append(lifting.krtimes(lift_us[:, :-1], xs_train[:, :-1]))
+            UX1.append(krtimes(lift_us[:, :-1], xs_train[:, :-1]))
         X2 = np.hstack(X2)
         X1 = np.hstack(X1)
         UX1 = np.hstack(UX1)
-        a_model = DiscrepDMDc.from_data(X2, X1, UX1, rcond=1e-6)
+        training_model = DiscrepDMDc.from_data(X2, X1, UX1, rcond=1e-6)
 
-        # Wrap model
-        # ==========
-        w_model = lifting.WrapModel(*a_model.get_discrete(), u_dim, order)
-        A, B = w_model.get_model_along_traj(xs_train, us_train, ts_train)
+        # Cost
+        # ====
+        # Manually form cost matrices
+        Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
+        Qf = Q * 0
+        R = 0.001 * np.identity(u_dim)
+
+        rho0 = qt.basis(2, 0).proj()
+        rho1 = ((qt.basis(2, 0) + qt.basis(2, 1)) / np.sqrt(2)).proj()  # qt.basis(2, 1).proj()
+        initial_state = rho0.data.toarray().flatten()
+        target_state = rho1.data.toarray().flatten()
+
+        # Benchmarks
+        # ----------
+        X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.n_steps + 1))
+        U_bm = np.hstack([np.zeros([u_dim, 1])] * clock.n_steps)
+
+        # Model (state-independent)
+        # =====
+        model1 = DiscrepDMDc.from_bootstrap(x_dim, x_dim, u_dim * x_dim, training_model.A)
+
+        # Model predictive control
+        # ========================
+        data, model2, exit_code = mpc(initial_state, u_dim, order, X_bm, U_bm, clock, e1, model1, Q, R, Qf)
+        print(exit_code)

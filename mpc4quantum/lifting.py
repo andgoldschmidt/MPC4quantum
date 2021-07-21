@@ -4,7 +4,8 @@ from itertools import combinations
 
 class WrapModel:
     """
-    Assumes a model with a polynomial control library up to a given order.
+    Assumes a model with a polynomial control library up to a given order. There are likely other assumptions
+    here. The use case is the local approximation of a bilinear model for NMPC.
     """
     def __init__(self, A_op, N_op, u_dim, order):
         # A @ x + N @ (f(u) * x)
