@@ -7,32 +7,32 @@ class WrapModel:
     Assumes a model with a polynomial control library up to a given order. There are likely other assumptions
     here. The use case is the local approximation of a bilinear model for NMPC.
     """
-    def __init__(self, A_op, N_op, u_dim, order):
+    def __init__(self, A_op, N_op, dim_u, order):
         # A @ x + N @ (f(u) * x)
         self.A = A_op
         self.N = N_op
 
         # Get dimensions
-        self.x_dim = self.A.shape[1]
-        self.u_dim = u_dim
+        self.dim_x = self.A.shape[1]
+        self.dim_u = dim_u
         self.order = order
-        self.polyu_dim = int(self.N.shape[1] / self.x_dim)
-        if not np.isclose(size_of_library(self.order, self.u_dim) - 1, self.polyu_dim):
+        self.polyu_dim = int(self.N.shape[1] / self.dim_x)
+        if not np.isclose(size_of_library(self.order, self.dim_u) - 1, self.polyu_dim):
             raise ValueError("Dimension mismatch when wrapping a model operator.")
 
         # Get library tools
-        self.fns = create_library(self.order, self.u_dim)[1:]
-        self.deriv_fns, self.deriv_coefs = diff_library(self.order, self.u_dim)
+        self.fns = create_library(self.order, self.dim_u)[1:]
+        self.deriv_fns, self.deriv_coefs = diff_library(self.order, self.dim_u)
 
         # N's actions must be unpacked in order to accommodate dN/dx or dN/du.
-        # Assumes that the control operator was constructed with [y_dim, krtimes(polyu_dim, x_dim)]
-        self.unpacked_N = N_op.reshape(self.x_dim, self.polyu_dim, self.x_dim)
+        # Assumes that the control operator was constructed with [y_dim, krtimes(polyu_dim, dim_x)]
+        self.unpacked_N = N_op.reshape(self.dim_x, self.polyu_dim, self.dim_x)
 
     def df_dx(self, x, u, t):
         u_shaped = u.reshape(-1, 1)
         # Get B(u) acting on x
         polyu = np.vstack([f(u_shaped) for f in self.fns])
-        B = np.hstack([self.unpacked_N[:, :, i] @ polyu for i in range(self.x_dim)])
+        B = np.hstack([self.unpacked_N[:, :, i] @ polyu for i in range(self.dim_x)])
         return self.A + B
 
     def df_du(self, x, u, t):
@@ -42,7 +42,7 @@ class WrapModel:
         polyB = np.hstack([self.unpacked_N[:, i, :] @ x_shaped for i in range(self.polyu_dim)])
         # Compute an operator for each coordinate of u. Each result is a column. Stack to act on u.
         B = []
-        for i in range(self.u_dim):
+        for i in range(self.dim_u):
             B.append(polyB @ (self.deriv_coefs[i] * np.vstack([f(u_shaped) for f in self.deriv_fns[i]])))
         return np.hstack(B)
 

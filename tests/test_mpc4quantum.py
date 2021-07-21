@@ -36,15 +36,15 @@ class TestAll(TestCase):
     def test_1(self):
         # Parameters
         # ==========
-        u_dim = 2
+        dim_u = 2
         x_dim = 4
-        order = 1
+        order = 2
 
         # Clock
         # =====
         n_steps = 25
         dt = 0.1
-        horizon = 15
+        horizon = 10
         clock = StepClock(dt, horizon, n_steps)
 
         # Experiment
@@ -61,7 +61,7 @@ class TestAll(TestCase):
         args = {'t0': 0, 'tf': 25, 'dt': clock.dt, 'A': 1}
         ts_train = np.arange(args['t0'], args['tf'], args['dt'])
         u = qubit.u1(ts_train, args)
-        lib_fns = create_library(order, u_dim)[1:]
+        lib_fns = create_library(order, dim_u)[1:]
         u1 = np.vstack([u, np.zeros_like(u)])
         u2 = np.vstack([np.zeros_like(u), u])
         X2 = []
@@ -69,7 +69,7 @@ class TestAll(TestCase):
         UX1 = []
         for us_train in [u1, u2]:
             xs_train = e1.simulate(x0_train, ts_train, us_train)
-            #     xs_train = xs_train + 5e-1 * np.random.randn(*xs_train.shape)
+            xs_train = xs_train + 5e-2 * np.random.randn(*xs_train.shape)
             X2.append(xs_train[:, 1:])
             X1.append(xs_train[:, :-1])
             lift_us = np.vstack([f(us_train) for f in lib_fns])
@@ -84,7 +84,7 @@ class TestAll(TestCase):
         # Manually form cost matrices
         Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
         Qf = Q * 0
-        R = 0.001 * np.identity(u_dim)
+        R = 0.001 * np.identity(dim_u)
 
         rho0 = qt.basis(2, 0).proj()
         rho1 = ((qt.basis(2, 0) + qt.basis(2, 1)) / np.sqrt(2)).proj()  # qt.basis(2, 1).proj()
@@ -94,13 +94,14 @@ class TestAll(TestCase):
         # Benchmarks
         # ----------
         X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.n_steps + 1))
-        U_bm = np.hstack([np.zeros([u_dim, 1])] * clock.n_steps)
+        U_bm = np.hstack([np.zeros([dim_u, 1])] * clock.n_steps)
 
         # Model (state-independent)
         # =====
-        model1 = DiscrepDMDc.from_bootstrap(x_dim, x_dim, u_dim * x_dim, training_model.A)
+        model1 = DiscrepDMDc.from_bootstrap(x_dim, x_dim, training_model.dim_u, training_model.A)
 
         # Model predictive control
         # ========================
-        data, model2, exit_code = mpc(initial_state, u_dim, order, X_bm, U_bm, clock, e1, model1, Q, R, Qf)
+        data, model2, exit_code = mpc(initial_state, dim_u, order, X_bm, U_bm, clock, e1, model1, Q, R, Qf,
+                                      streaming=True)
         print(exit_code)

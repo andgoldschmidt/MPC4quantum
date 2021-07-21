@@ -1,9 +1,10 @@
 from .lifting import WrapModel, create_library, krtimes
 
-import numpy as np
-import warnings
-from scipy.interpolate import interp1d
 import cvxpy as cp
+import numpy as np
+from scipy.interpolate import interp1d
+from tqdm.auto import tqdm
+import warnings
 
 
 class StepClock:
@@ -12,31 +13,41 @@ class StepClock:
         self.horizon = horizon
         self.n_steps = n_steps
         self.ts = np.linspace(0, self.dt * self.n_steps, self.n_steps, endpoint=False)
+        self.ts_sim = self.ts
+
+    def set_endsim(self, index):
+        self.ts_sim = self.ts[:index]
 
     def ts_step(self, a_step):
         return np.linspace(self.dt * a_step, self.dt * (a_step + 1), 2)
 
 
-def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls):
+# def _quad_form(x, P):
+#     # Check for zero matrix before compute
+#     return cp.quad_form(x, P) if np.any(P > 0) else []
+
+
+def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, verbose=False):
     """
     Solve a quadratic program under X' = A X + B U.
 
     :param x0: Initial (flat)
-    :param X_bm: x_dim by n_steps + 1
-    :param U_bm: u_dim by n_steps
+    :param X_bm: dim_x by n_steps + 1
+    :param U_bm: dim_u by n_steps
     :param Q_ls: List of state costs. Length n_steps + 1.
     :param R_ls: List of control costs. Length n_steps.
     :param A_ls: List of drift operators. Length n_steps.
     :param B_ls: List of control operators. Length n_steps.
+    :param verbose: Print cvxpy diagnostics. Default False.
     :return: Solved quadratic program for the dynamics.
     """
     # Shapes
-    u_dim, n_steps = U_bm.shape
-    x_dim, _ = X_bm.shape
+    dim_u, n_steps = U_bm.shape
+    dim_x, _ = X_bm.shape
 
     # Variables
-    X = cp.Variable((x_dim, n_steps + 1), complex=True)
-    U = cp.Variable([u_dim, n_steps])
+    X = cp.Variable((dim_x, n_steps + 1), complex=True)
+    U = cp.Variable([dim_u, n_steps])
 
     # QP
     cost = 0
@@ -49,10 +60,12 @@ def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls):
         if t > 1:
             constr += [cp.norm(U[:, t] - U[:, t-1]) <= 5]
     constr += [X[:, 0] == x0]
-    cost += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
+    # Catch small bug in cvxpy related to zero quad form
+    if np.any(Q_ls[-1] > 0):
+        cost += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
-    val = prob.solve(solver=cp.ECOS)
-    return X.value, U.value, [val, prob]
+    obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)
+    return X.value, U.value, obj_val, prob
 
 
 def shift_guess(data):
@@ -60,7 +73,8 @@ def shift_guess(data):
     return np.hstack([data[:, 1:].reshape(-1, n - 1), data[:, -1].reshape(-1, 1)])
 
 
-def mpc(x0, u_dim, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_iter=10, streaming=False):
+def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_iter=10, streaming=False,
+        progress_bar=True, verbose=False):
     # Set an mpc exit to stop early
     mpc_exit = False
     exit_code = 0
@@ -72,7 +86,7 @@ def mpc(x0, u_dim, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_it
 
     # Set guess to initial value (a la SDRE)
     X_guess = np.hstack([x0.reshape(-1, 1)] * (clock.n_steps + 1))
-    U_guess = np.hstack([np.zeros([u_dim, 1])] * clock.n_steps)
+    U_guess = np.hstack([np.zeros([dim_u, 1])] * clock.n_steps)
 
     # Stretch Q, R
     Q_ls = [Q] * clock.n_steps
@@ -81,25 +95,43 @@ def mpc(x0, u_dim, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_it
 
     # Wrap (A, N) model to permit local approximations
     # TODO: We want the ability to also use linear models in this way.
-    wrapped_model = WrapModel(*model.get_discrete(), u_dim, order)
+    wrapped_model = WrapModel(*model.get_discrete(), dim_u, order)
 
     # Solve MPC
     # =========
     xs[0] = x0
-    for k in range(clock.n_steps):
+    for k in tqdm(range(clock.n_steps)) if progress_bar else range(clock.n_steps):
         # Iterative QP
         # ------------
         n_iter = 0
-        iqp_exit = False
-        while not iqp_exit and n_iter < max_iter:
+        iqp_exit_condition = False
+        while not iqp_exit_condition and n_iter < max_iter:
             A_ls, B_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts)
-            # Catch deprecation of np.complex
             with warnings.catch_warnings():
+                # Catch deprecation of np.complex
                 warnings.simplefilter(action="ignore", category=DeprecationWarning)
-                X_opt, U_opt, _ = quad_program(xs[k], X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls)
-            # iqp_exit = False
-            iqp_exit = k > 0 # -- tmp. soln: Only fit first pass.
+                # Catch bad optimization warning
+                warnings.simplefilter(action="error", category=UserWarning)
+                try:
+                    X_opt, U_opt, obj_val, prob = quad_program(xs[k], X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, verbose)
+                except Warning as w:
+                    print(w)
+                    exit_code = 2
+                    break
+            # Check outcome for failed convergence
+            if obj_val is np.inf:
+                warnings.warn("Quadratic program failed to converge. Inspect the model.")
+                exit_code = 3
+                break
+
+            # Exit condition for iteration convergence
+            iqp_exit_condition = k > 0
             n_iter += 1
+
+        # TODO: Is there anything else we should do for truncated runs?
+        # Check for quad_program success / failure
+        if exit_code > 0:
+            break
 
         # Simulate
         # --------
@@ -120,13 +152,14 @@ def mpc(x0, u_dim, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_it
         # Online model update
         # -------------------
         if streaming:
-            fns = create_library(order, u_dim)[1:]
+            fns = create_library(order, dim_u)[1:]
             lift_u = np.vstack([f(us[k].reshape(-1, 1)) for f in fns])
             model.fit_iteration(xs[k + 1], xs[k], krtimes(lift_u, xs[k].reshape(-1, 1)))
 
         if mpc_exit:
-            exit_code = k
+            exit_code = 1
             break
 
-    return [np.vstack(xs[:k + 1]).T, np.vstack(us[:k + 1]).T], model, exit_code
+    clock.set_endsim(k)
+    return [np.vstack(xs[:k + 1]).T, np.vstack(us[:k]).T], model, exit_code
 

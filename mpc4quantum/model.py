@@ -112,6 +112,9 @@ class DiscrepDMDc(DMDc):
 
     Notes:
         1.  Consider improvements with streaming ideas to avoid repeat pinv.
+
+    TODO:
+        1. Need to implement a copy method.
     """
     def __init__(self, dim_y, dim_x, dim_u, A0, **kwargs):
         super().__init__(dim_y, dim_x, dim_u, A0)
@@ -123,6 +126,7 @@ class DiscrepDMDc(DMDc):
         self.U = kwargs['U'] if 'U' in kwargs else None
         self.discount = kwargs['discount'] if 'discount' in kwargs else self.discount
         self.rcond = kwargs['rcond'] if 'rcond' in kwargs else self.rcond
+        self.min_rank = dim_x
 
         # Saved data
         self.iA = [A0]
@@ -187,10 +191,14 @@ class DiscrepDMDc(DMDc):
         self.U = self._update_stack(next_u, self.U, self.discount)
 
         # Add the current discrepancy model to the previous model.
-        current_Y = self.predict(self.X, self.U)
-        current_Z = np.vstack([self.X, self.U])
-        A1 = (self.Y - current_Y) @ np.linalg.pinv(current_Z, rcond=self.rcond)
-        self.A = self.A + A1
+        # TODO: set step size for update?
+        if np.linalg.matrix_rank(self.X) >= self.min_rank:
+            current_Y = self.predict(self.X, self.U)
+            current_Z = np.vstack([self.X, self.U])
+            A1 = (self.Y - current_Y) @ np.linalg.pinv(current_Z, rcond=self.rcond)
+            self.A = self.A + A1
+
+        # Save iteration
         self._iteration += 1
         if self._save and self._iteration % self._isave == 0:
             self.iA.append(np.copy(self.A))
