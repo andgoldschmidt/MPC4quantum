@@ -138,28 +138,6 @@ class VanDerPol(CExperiment):
     def proj(z):
         return z[:2, :]
 
-    def set_cost(self, Q, R, Qf):
-        self.Q = Q
-        self.R = R
-        self.Qf = Qf
-        self._set_cost = True
-
-    def get_cost(self):
-        if self._set_cost:
-            return self.Q, self.R, self.Qf
-        else:
-            raise RuntimeError("LQR cost not set.")
-
-    def set_target(self, target):
-        self.target = target
-        self._set_target = True
-
-    def get_target(self):
-        if self._set_target:
-            return self.Q, self.R, self.Qf
-        else:
-            raise RuntimeError("LQR target not set.")
-
 
 class Rotor(CExperiment):
     """
@@ -178,6 +156,24 @@ class Rotor(CExperiment):
             omega * x2,
             -omega * x1
         ])
+
+
+# Utility functions for interp1d controls
+def _wrap_u(u_func, index_u):
+    def new_func(ts, args):
+        return u_func(ts)[index_u]
+    return new_func
+
+
+def _wrap_us(us):
+    if callable(us):
+        # Assume us is an interp1d object
+        u_dim = us.y.reshape(-1, len(us.x)).shape[0]
+        us = np.array([_wrap_u(us, i) for i in range(u_dim)])
+    else:
+        us = np.atleast_2d(us)
+        u_dim = us.shape[0]
+    return us, u_dim
 
 
 class QExperiment(Experiment):
@@ -199,26 +195,16 @@ class QExperiment(Experiment):
         """
         self._me_args[key] = value
 
-    @staticmethod
-    def _wrap_u(u_func, index_u):
-        def new_func(ts, args):
-            return u_func(ts)[index_u]
-        return new_func
-
     def simulate(self, x0, ts, us):
         self.set('rho0', Qobj(x0.reshape(*self.H0.shape)))
         self.ts = ts
         self.set('tlist', self.ts)
-        # Assume us is a 1dInterp object if callable.
-        if callable(us):
-            u_dim = us.y.reshape(-1, len(us.x)).shape[0]
-            self.us = np.array([self._wrap_u(us, i) for i in range(u_dim)])
-        else:
-            self.us = np.atleast_2d(us)
-            u_dim = self.us.shape[0]
+        # Check is 'us' is a function or an ndarray
+        self.us, u_dim = _wrap_us(us)
         self.set('H', [self.H0] + [[self.H1_list[i_row], self.us[i_row]] for i_row in range(u_dim)])
         res = mesolve(**self._me_args)
-        self.xs = np.array(res.expect) if 'e_ops' in self._me_args else np.array(res.states).reshape(len(ts), -1).T
+        self.xs = np.array(res.expect) if 'e_ops' in self._me_args \
+            else np.vstack([s.full().flatten() for s in res.states]).T
         return self.xs
 
 
@@ -241,23 +227,12 @@ class QSynthesis(Experiment):
         """
         self._prop_args[key] = value
 
-    @staticmethod
-    def _wrap_u(u_func, index_u):
-        def new_func(ts, args):
-            return u_func(ts)[index_u]
-        return new_func
-
     def simulate(self, x0, ts, us):
         # Shape the initial condition into a propagator
         x0 = Qobj(x0.reshape(*self.H0.shape))
         self.ts = ts
-        # Assume us is a 1dInterp object if callable.
-        if callable(us):
-            u_dim = us.y.reshape(-1, len(us.x)).shape[0]
-            self.us = np.array([self._wrap_u(us, i) for i in range(u_dim)])
-        else:
-            self.us = np.atleast_2d(us)
-            u_dim = self.us.shape[0]
+        # Check is 'us' is a function or an ndarray
+        self.us, u_dim = _wrap_us(us)
         self.set('H', [self.H0] + [[self.H1_list[i_row], self.us[i_row]] for i_row in range(u_dim)])
         # Catch a qutip bug for ts <= 2.
         # Unitary mode 'single' avoids the need to check if dtype is Qobj or memoryview
