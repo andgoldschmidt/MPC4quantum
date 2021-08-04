@@ -54,6 +54,11 @@ class WrapModel:
             B.append(self.df_du(xs[:, i], us[:, i], ts[i]))
         return A, B
 
+    def get_model_from_initial(self, xs, us, ts):
+        A = [self.df_dx(xs[:, 0], us[:, 0], ts[0])] * len(ts)
+        B = [self.df_du(xs[:, 0], us[:, 0], ts[0])] * len(ts)
+        return A, B
+
 
 def krtimes(A, B):
     # Khatri-Rao product

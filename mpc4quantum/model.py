@@ -179,8 +179,8 @@ class DiscrepDMDc(DMDc):
         return cls(dim_y, dim_x, dim_u, A0, **{'Y': Y, 'X': X, 'U': U, 'rcond': rcond})
 
     @staticmethod
-    def _update_stack(val, stack, discount):
-        val = val.reshape(-1, 1)
+    def _update_stack(val, stack, discount, nadd=1):
+        val = val.reshape(-1, nadd)
         return val if stack is None else np.hstack([discount * stack, val])
 
     def fit_iteration(self, next_y, next_x, next_u=np.array([])):
@@ -205,6 +205,12 @@ class DiscrepDMDc(DMDc):
 
         # Return the current linear model
         return self.get_discrete()
+
+    def append(self, Y, X, U):
+        nadd = Y.shape[1]
+        self.Y = self._update_stack(Y, self.Y, 1, nadd)
+        self.X = self._update_stack(X, self.X, 1, nadd)
+        self.U = self._update_stack(U, self.U, 1, nadd)
 
 
 class OnlineDMDc(DMDc):
