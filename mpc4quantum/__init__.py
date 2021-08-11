@@ -4,4 +4,4 @@ from .experiment import *
 from .lifting import *
 from .model import OnlineDMDc, DiscrepDMDc
 from .mpc import *
-
+from .vectorization import *

@@ -27,74 +27,85 @@ class StepClock:
         return np.linspace(self.dt * a_step, self.dt * (a_step + 1), 2)
 
 
-# def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, verbose=False):
-#     # Shapes
-#     dim_u, n_steps = U_bm.shape
-#     dim_x, _ = X_bm.shape
-#
-#     # Variables
-#     X = cp.Variable((dim_x, n_steps + 1), complex=True)
-#     U = cp.Variable([dim_u, n_steps])
-#
-#     # Init QP
-#     cost = 0
-#     constr = []
-#     constr += [X[:, 0] == x0]
-#
-#     # QP
-#     for t in range(n_steps):
-#         cost += cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]) + cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t])
-#         constr += [X[:, t + 1] == A_ls[t] @ X[:, t] + B_ls[t] @ U[:, t]]
-#         constr += [cp.norm(U[:, t], 'inf') <= 5]
-#         if t > 1:
-#             constr += [cp.norm(U[:, t] - U[:, t-1], 'inf') <= 2]
-#     # Catch small bug in cvxpy related to zero quad form
-#     if np.any(Q_ls[-1] > 0):
-#         cost += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
-#
-#     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
-#     obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)
-#     return X.value, U.value, obj_val, prob
-
-
-def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, verbose=False):
+def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, verbose=False):
     # Shapes
     dim_u, n_steps = U_bm.shape
     dim_x, _ = X_bm.shape
 
-    # Flat variables
-    X = cp.Variable((dim_x * (n_steps + 1)), complex=True)
-    U = cp.Variable((dim_u * n_steps))
+    # Variables
+    X = cp.Variable((dim_x, n_steps + 1), complex=True)
+    U = cp.Variable([dim_u, n_steps])
 
-    # Cost
+    # Init QP
     cost = 0
-    R = block_diag(R_ls)
-    cost += cp.quad_form(U - U_bm.T.flatten(), R)
-    # note: conic solvers use norms not quadratic forms (manually replace <x,Qx> bc Q >= 0 can have bad numerics)
-    sqrt_Q = block_diag([sqrtm(q) for q in Q_ls])
-    cost += cp.norm(sqrt_Q @ (X - X_bm.T.flatten()), 2)**2
-
-    # Dynamics constraints
-    # note: individual constraints for each time improve optimization success (empirical claim);
-    #       this is in contrast to a single RHS == LHS for all times.
     constr = []
-    constr += [X[:dim_x] == x0]
-    for t in range(n_steps):
-        RHS = A_ls[t] @ X[t * dim_x: (t + 1) * dim_x] + B_ls[t] @ U[t * dim_u: (t + 1) * dim_u]
-        LHS = X[(t + 1) * dim_x: (t + 2) * dim_x]
-        # constr += [LHS == RHS]
-        constr += [cp.norm(LHS - RHS, 'inf') <= 1e-3]
+    constr += [X[:, 0] == x0]
 
-    # Control constraint
-    constr += [cp.norm(U, 'inf') <= 1]
+    # QP
+    for t in range(n_steps):
+        cost += cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]) + cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t])
+        constr += [X[:, t + 1] == A_ls[t] @ X[:, t] + B_ls[t] @ U[:, t]]
+        constr += [cp.norm(U[:, t], 'inf') <= sat]
+    # Catch small bug in cvxpy related to zero quad form
+    if np.any(Q_ls[-1] > 0):
+        cost += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
+
+    # Pin control to u_prev (regularize gradients)
     if u_prev is not None:
-        constr += [cp.norm(U[:dim_u] - u_prev.flatten(), 1) <= 0.5]
+        constr += [cp.norm(U[:, 0] - u_prev.flatten(), 1) <= 0.5]
 
     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
     obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)
-    X_reshape = X.value if X.value is None else X.value.reshape(n_steps + 1, dim_x).T
-    U_reshape = U.value if U.value is None else U.value.reshape(n_steps, dim_u).T
-    return X_reshape, U_reshape, obj_val, prob
+    return X.value, U.value, obj_val, prob
+
+# def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, verbose=False):
+#     """
+#     Note the following error:
+#         ValueError: all the input arrays must have same number of dimensions, but the array at index 0 has
+#         1 dimension(s) and the array at index 1 has 2 dimension(s)
+#
+#     If you see this error, then cvxpy is unable to handle the fact that Q_ls[i] may be zero. This error appears when
+#     converting the quadratic form to a norm which is what conic solvers do.
+#     """
+#     # Shapes
+#     dim_u, n_steps = U_bm.shape
+#     dim_x, _ = X_bm.shape
+#
+#     # Flat variables
+#     X = cp.Variable((dim_x * (n_steps + 1)), complex=True)
+#     U = cp.Variable((dim_u * n_steps))
+#
+#     # Cost
+#     cost = 0
+#     R = block_diag(R_ls)
+#     cost += cp.quad_form(U - U_bm.T.flatten(), R)
+#     # note: conic solvers use norms not quadratic forms (manually replace <x,Qx> bc Q >= 0 can have bad numerics)
+#     sqrt_Q = block_diag([sqrtm(q) for q in Q_ls])
+#     cost += cp.norm(sqrt_Q @ (X - X_bm.T.flatten()), 2)**2
+#
+#     # Dynamics constraints
+#     # note: individual constraints for each time improve optimization success (empirical claim);
+#     #       this is in contrast to a single RHS == LHS for all times.
+#     constr = []
+#     constr += [X[:dim_x] == x0]
+#     for t in range(n_steps):
+#         RHS = A_ls[t] @ X[t * dim_x: (t + 1) * dim_x] + B_ls[t] @ U[t * dim_u: (t + 1) * dim_u]
+#         LHS = X[(t + 1) * dim_x: (t + 2) * dim_x]
+#         constr += [LHS == RHS]
+#         # constr += [cp.norm(LHS - RHS, 'inf') <= 1e-4]
+#
+#     # Control constraint
+#     # TODO: Better design!
+#     if sat is not None:
+#         constr += [cp.norm(U, 'inf') <= sat]
+#     # if u_prev is not None:
+#         # constr += [cp.norm(U[:dim_u] - u_prev.flatten(), 1) <= 0.5]
+#
+#     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
+#     obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)
+#     X_reshape = X.value if X.value is None else X.value.reshape(n_steps + 1, dim_x).T
+#     U_reshape = U.value if U.value is None else U.value.reshape(n_steps, dim_u).T
+#     return X_reshape, U_reshape, obj_val, prob
 
 
 def shift_guess(data):
@@ -102,7 +113,7 @@ def shift_guess(data):
     return np.hstack([data[:, 1:].reshape(-1, n - 1), data[:, -1].reshape(-1, 1)])
 
 
-def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_iter=10, exit_condition=None,
+def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=None, max_iter=10, exit_condition=None,
         streaming=False, progress_bar=True, verbose=False):
     # Set default mpc exit
     exit_code = 0
@@ -148,9 +159,9 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, max_it
                 # Catch bad optimization warning
                 warnings.simplefilter(action="error", category=UserWarning)
                 try:
-                    u_prev = us[a_step - 1] if a_step > 1 else None
+                    u_prev = us[a_step - 1] if a_step > 1 else np.zeros((dim_u, 1))
                     X_opt, U_opt, obj_val, prob = quad_program(xs[a_step], X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls,
-                                                               u_prev, verbose)
+                                                               u_prev, sat, verbose)
                 except Warning as w:
                     print(w)
                     exit_code = 2
