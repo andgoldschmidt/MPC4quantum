@@ -1,45 +1,16 @@
-from mpc4quantum import *
+from mpc4quantum import create_library, krtimes, DiscrepDMDc
 
+import numpy as np
 import qutip as qt
 import matplotlib.pyplot as plt
 cmap = plt.get_cmap('tab10')
 
 
-def blackman(ts, t0, tf, dt):
-    """
-    Evaluate Blackman pulse to resolution dt using 1D linear interpolation.
-    """
-    M = int((tf - t0) / dt)
-    t_interp = np.linspace(t0, tf, M)
-    f_interp = np.blackman(M)
-    return np.interp(ts, t_interp, f_interp, left=0, right=0)
-
-
-class RWA_Qubit:
-    def __init__(self, w0, w1, wR, A0):
-        self.dim_s = 2
-        self.dim_x = self.dim_s ** 2
-        self.dim_u = 1
-
-        self._w0 = w0
-        self._w1 = w1
-        self._wR = wR
-        self._A0 = A0
-
-        H0 = 1 / 2 * (self._w0 - self._wR) * qt.sigmaz()
-        H1 = 1 / 2 * self._A0 * qt.sigmax()
-        # H2 = 1 / 2 * self._A0 * qt.sigmay()
-
-        self.H_list = [H0, H1]
-        self.QE = QExperiment(H0, [H1])
-        # self.H_list = [H0, H1, H2]
-        # self.QE = QExperiment(H0, [H1, H2])
-
-    def u1(self, ts, args):
-        return args['A'] * blackman(ts, args['t0'], args['tf'], args['dt']) * np.cos((self._w1 - self._wR) * ts)
-
-
 def train_model(pulse_width, clock, qubit, order):
+    """
+    Train a DMD model for the two-level qubit util_qubits.RWA_Qubit using data taken from an experiment with
+     a Gaussian drive.
+    """
     # User inputs
     # ===========
     x0_train = qt.basis(qubit.dim_s, 0).proj().data.toarray().flatten()
@@ -50,14 +21,14 @@ def train_model(pulse_width, clock, qubit, order):
     u1 = qubit.u1(ts_train, args1)
     u1 = u1[None, :]
 
-    # Two pulses
-    # ----------
+    # Two pulses?
     # u1 = np.vstack([u, np.zeros_like(u)])
     # u2 = np.vstack([np.zeros_like(u), u])
 
     # Training data
     # =============
     training_list = [u1]
+    # Two pulses?
     # training_list = [u1, u2]
     n_training = len(training_list)
 
@@ -69,6 +40,7 @@ def train_model(pulse_width, clock, qubit, order):
     UX1 = []
     for us_train in training_list:
         xs_train = qubit.QE.simulate(x0_train, ts_train, us_train)
+        # Noise (e.g., finite measurement statistics)?
         # xs_train = xs_train + 1e-2 * np.random.randn(*xs_train.shape)
         X2.append(xs_train[:, 1:])
         X1.append(xs_train[:, :-1])

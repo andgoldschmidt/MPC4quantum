@@ -29,10 +29,11 @@ def discretize_homogeneous(A_cts_list, dt, order):
             elems, counts = np.unique(a_product, return_counts=True)
             powers = np.zeros(dim_u + 1)
             powers[elems.astype(int)] = counts
-            match = np.flatnonzero(powers_list == np.array(powers[1:]))
-            if len(match) > 1:
-                raise ValueError('Got additional matched powers; control powers should be unique.')
-            A_dst_list[match[0]] = A_dst_list[match[0]] + entry
+            match = np.argwhere(np.product(powers_list == np.array(powers[1:]), axis=1))
+            if len(match) != 1:
+                raise ValueError('Error in discretization. Control powers should contribute uniquely.')
+            index = match[0, 0]
+            A_dst_list[index] = A_dst_list[index] + entry
     return np.hstack(A_dst_list)
 
 
