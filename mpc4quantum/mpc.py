@@ -1,5 +1,6 @@
 from .lifting import WrapModel, create_library, krtimes
 from .optimization import quad_program
+# from .lqr import quad_program
 
 import numpy as np
 from scipy.interpolate import interp1d

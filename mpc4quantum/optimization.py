@@ -1,5 +1,5 @@
 import cvxpy as cp
-from scipy.sparse import block_diag
+from scipy.sparse import block_diag, lil_matrix
 from scipy.linalg import sqrtm
 
 
@@ -55,10 +55,10 @@ def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, 
 
     # Cost
     cost = 0
-    R = block_diag(R_ls)
+    R = lil_matrix(block_diag(R_ls))
     cost += cp.quad_form(U - U_bm.T.flatten(), R)
     # note: conic solvers use norms not quadratic forms (manually replace <x,Qx> bc Q >= 0 can have bad numerics)
-    sqrt_Q = block_diag([sqrtm(q) for q in Q_ls])
+    sqrt_Q = lil_matrix(block_diag([sqrtm(q) for q in Q_ls]))
     cost += cp.norm(sqrt_Q @ (X - X_bm.T.flatten()), 2)**2
 
     # Dynamics constraints
@@ -77,7 +77,7 @@ def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, 
     if sat is not None:
         constr += [cp.norm(U, 'inf') <= sat]
     if u_prev is not None:
-        constr += [cp.norm(U[:dim_u] - u_prev.flatten(), 1) <= 0.5]
+        constr += [cp.norm(U[:dim_u] - u_prev.flatten(), 1) <= 0.25]
 
     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
     obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)

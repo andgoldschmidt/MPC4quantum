@@ -41,13 +41,13 @@ class TestAll(TestCase):
         # Parameters
         # ==========
         order = 2
-        sat = 2
+        sat = 1
 
         # Clock
         # -----
-        n_steps = 50
-        dt = 0.1
-        horizon = 50
+        n_steps = 75
+        dt = 0.25
+        horizon = 40
         clock = m4q.StepClock(dt, horizon, n_steps)
 
         # Experiment
@@ -65,14 +65,18 @@ class TestAll(TestCase):
         # Cost
         # ====
         # Manually form cost matrices
-        # Q = np.identity(qubit.dim_x)
         Q = np.zeros((qubit.dim_x, qubit.dim_x))
         Q[0, 0] = 1
         Q[4, 4] = 1
-        Qf = Q * 1e2
-        R = 1e-3 * np.identity(qubit.dim_u)
+        Q[8, 8] = 0
+        Qf = Q
+        # Break symmetry
+        R = np.array([[1e-6, 0], [0, 1e-1]])  # 1e-3 * np.identity(qubit.dim_u)
 
+        # Avoid local min.--perturb. initial state slightly
+        Rx = qt.qip.operations.rx(1e-4)
         rho0 = qt.basis(qubit.dim_s, 0).proj()
+        rho0.data[:2, :2] = Rx.dag() * rho0[:2, :2] * Rx
         rho1 = qt.basis(qubit.dim_s, 1).proj()
         initial_state = rho0.data.toarray().flatten()
         target_state = rho1.data.toarray().flatten()
@@ -80,7 +84,9 @@ class TestAll(TestCase):
         # Benchmarks
         # ----------
         X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.n_steps + 1))
-        U_bm = np.hstack([np.zeros([qubit.dim_u, 1])] * clock.n_steps)
+        t1 = np.linspace(0, n_steps * dt, n_steps, endpoint=False)
+        u1 = qubit.u1(t1, {'A': 1, 't0': t1[0], 'tf': t1[-1], 'dt': dt})
+        U_bm = np.vstack([u1, np.zeros_like(u1)])
 
         # Model (state-independent)
         # =====
@@ -95,7 +101,7 @@ class TestAll(TestCase):
         # Save diagnostics
         # ================
         # if diagnostic_plots:
-        path = './../playground/2021_08_13_DRAG_1/'.format(order, *str(dt).split('.'))
+        path = './../playground/2021_08_13_DRAG_1/'
         if not os.path.exists(path):
             os.makedirs(path)
 
@@ -105,12 +111,16 @@ class TestAll(TestCase):
 
         fig, axes = plot_operator(model2.A, qubit.dim_x)
         fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
-
         xs, us = data
         fig, axes = plt.subplots(2, 1)
         ax = axes[0]
-        for row in xs[:, :-1]:
-            ax.plot(clock.ts_sim, row.real, marker='o', markerfacecolor='None')
+        for irow, row in enumerate(xs[:, :-1]):
+            ilabel = 'r{}'.format(np.base_repr(irow, base=3).zfill(2))
+            ax.plot(clock.ts_sim, row.real, marker='.', markerfacecolor='None', label=ilabel)
+        lines = ax.get_lines()
+        labels_to_show = [0, 4, 8]
+        ax.legend([lines[l] for l in labels_to_show], [lines[l].get_label() for l in labels_to_show],
+                  ncol=len(labels_to_show))
         ax.set_ylim([-1.1, 1.1])
         ax = axes[1]
         infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(qubit.dim_s, qubit.dim_s)), rho1) for x in xs.T]
@@ -198,7 +208,7 @@ class TestAll(TestCase):
         """
         This code demonstrates some MPC controls and corresponding trajectories for a state transfer.\
         """
-        for order in range(1, 5):
+        for order in range(2, 5):
             np.random.seed(1)
             # Parameters
             # ==========
@@ -228,12 +238,13 @@ class TestAll(TestCase):
             # ====
             # Manually form cost matrices
             Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
-            Qf = Q * 0
-            r_val = 1e-6
+            Qf = Q
+            r_val = 1e-1
             R = r_val * np.identity(qubit.dim_u)
 
             # Set control problem
-            rho0 = qt.basis(qubit.dim_s, 0).proj()
+            Rx = qt.qip.operations.rx(1e-4)
+            rho0 = Rx.dag() * qt.basis(qubit.dim_s, 0).proj() * Rx
             rho1 = qt.basis(qubit.dim_s, 1).proj()
             initial_state = rho0.data.toarray().flatten()
             target_state = rho1.data.toarray().flatten()
