@@ -36,106 +36,109 @@ def plot_operator(A, dim_x, args=imshow_args):
 
 class TestAll(TestCase):
     def test_3level_drag(self):
-        # for order in range(1, 4):
-        np.random.seed(1)
-        # Parameters
-        # ==========
-        order = 2
-        sat = 1
+        for order in range(3, 4):
+            np.random.seed(1)
+            # Parameters
+            # ==========
+            # order = 2
+            sat = 1
+            # Clock
+            # -----
+            n_steps = 8
+            dt = 0.5
+            horizon = 8
+            clock = m4q.StepClock(dt, horizon, n_steps)
 
-        # Clock
-        # -----
-        n_steps = 75
-        dt = 0.25
-        horizon = 40
-        clock = m4q.StepClock(dt, horizon, n_steps)
+            # Experiment
+            # ==========
+            freqs = {'delta': -0.06, 'A0': 1}
+            qubit = RWA_Transmon(**freqs)
 
-        # Experiment
-        # ==========
-        freqs = {'delta': 0.1, 'A0': 1}
-        qubit = RWA_Transmon(**freqs)
+            # Initial model
+            # -------------
+            measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
+                            for j in range(qubit.dim_s)]
+            A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
+            A_init = m4q.discretize_homogeneous(A_cts_list, dt, order)
 
-        # Initial model
-        # -------------
-        measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
-                        for j in range(qubit.dim_s)]
-        A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
-        A_init = m4q.discretize_homogeneous(A_cts_list, dt, order)
+            # Cost
+            # ====
+            # Manually form cost matrices_new
+            Q = np.zeros((qubit.dim_x, qubit.dim_x))
+            Q[0, 0] = 1
+            Q[4, 4] = 1
+            Q[8, 8] = 0
+            Qf = Q * 1
+            # Break symmetry
+            R = np.array([[1e-3, 0], [0, 1e-3]])  # 1e-3 * np.identity(qubit.dim_u)
 
-        # Cost
-        # ====
-        # Manually form cost matrices
-        Q = np.zeros((qubit.dim_x, qubit.dim_x))
-        Q[0, 0] = 1
-        Q[4, 4] = 1
-        Q[8, 8] = 0
-        Qf = Q
-        # Break symmetry
-        R = np.array([[1e-6, 0], [0, 1e-1]])  # 1e-3 * np.identity(qubit.dim_u)
+            # Avoid local min.--perturb. initial state slightly
+            Rx = qt.qip.operations.rx(1e-4)
+            rho0 = qt.basis(qubit.dim_s, 0).proj()
+            rho0.data[:2, :2] = Rx.dag() * rho0[:2, :2] * Rx
+            rho1 = qt.basis(qubit.dim_s, 1).proj()
+            initial_state = rho0.data.toarray().flatten()
+            target_state = rho1.data.toarray().flatten()
 
-        # Avoid local min.--perturb. initial state slightly
-        Rx = qt.qip.operations.rx(1e-4)
-        rho0 = qt.basis(qubit.dim_s, 0).proj()
-        rho0.data[:2, :2] = Rx.dag() * rho0[:2, :2] * Rx
-        rho1 = qt.basis(qubit.dim_s, 1).proj()
-        initial_state = rho0.data.toarray().flatten()
-        target_state = rho1.data.toarray().flatten()
+            # Benchmarks
+            # ----------
+            X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.n_steps + 1))
+            t1 = np.linspace(0, n_steps * dt, n_steps, endpoint=False)
+            # u1 = qubit.u1(t1, {'A': 1, 't0': t1[0], 'tf': t1[-1], 'dt': dt})
+            U_bm = np.vstack([np.zeros_like(t1), np.zeros_like(t1)])
 
-        # Benchmarks
-        # ----------
-        X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.n_steps + 1))
-        t1 = np.linspace(0, n_steps * dt, n_steps, endpoint=False)
-        u1 = qubit.u1(t1, {'A': 1, 't0': t1[0], 'tf': t1[-1], 'dt': dt})
-        U_bm = np.vstack([u1, np.zeros_like(u1)])
+            # Model (state-independent)
+            # =====
+            dim_lift = len(create_library(order, qubit.dim_u)[1:])
+            model1 = DiscrepDMDc.from_bootstrap(qubit.dim_x, qubit.dim_x, qubit.dim_x * dim_lift, A_init)
 
-        # Model (state-independent)
-        # =====
-        dim_lift = len(create_library(order, qubit.dim_u)[1:])
-        model1 = DiscrepDMDc.from_bootstrap(qubit.dim_x, qubit.dim_x, qubit.dim_x * dim_lift, A_init)
+            # Model predictive control
+            # ========================
+            data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1,
+                                              Q, R, Qf, sat=sat)
 
-        # Model predictive control
-        # ========================
-        data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1,
-                                          Q, R, Qf, sat=sat)
+            # Save diagnostics
+            # ================
+            # if diagnostic_plots:
+            path = './../playground/2021_08_16_DRAG_minus/'
+            if not os.path.exists(path):
+                os.makedirs(path)
 
-        # Save diagnostics
-        # ================
-        # if diagnostic_plots:
-        path = './../playground/2021_08_13_DRAG_1/'
-        if not os.path.exists(path):
-            os.makedirs(path)
+            transparent = False
+            if not os.path.exists(path):
+                os.makedirs(path)
 
-        transparent = False
-        if not os.path.exists(path):
-            os.makedirs(path)
+            fig, axes = plot_operator(model2.A, qubit.dim_x)
+            fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
+            xs, us = data
+            fig, axes = plt.subplots(2, 1)
+            ax = axes[0]
+            ilabels = [0, 4, 8]
+            for irow, row in enumerate(xs[:, :-1]):
+                ilabel = 'r{}'.format(np.base_repr(irow, base=3).zfill(2))
+                ax_args = {'marker': '.', 'markerfacecolor': 'None', 'label': ilabel, 'alpha': 1}
+                if irow in ilabels:
+                    ax.plot(clock.ts_sim, row.real, **ax_args)
+            # lines = ax.get_lines()
+            # ax.legend([lines[l] for l in ilabels], [lines[l].get_label() for l in ilabels], ncol=len(ilabels))
+            ax.legend()
+            ax.set_ylim([-1.1, 1.1])
+            ax = axes[1]
+            infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(qubit.dim_s, qubit.dim_s)), rho1) for x in xs.T]
+            ax.plot(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), infidelity)
+            ax.set_yscale('log')
+            fig.tight_layout()
+            fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
 
-        fig, axes = plot_operator(model2.A, qubit.dim_x)
-        fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
-        xs, us = data
-        fig, axes = plt.subplots(2, 1)
-        ax = axes[0]
-        for irow, row in enumerate(xs[:, :-1]):
-            ilabel = 'r{}'.format(np.base_repr(irow, base=3).zfill(2))
-            ax.plot(clock.ts_sim, row.real, marker='.', markerfacecolor='None', label=ilabel)
-        lines = ax.get_lines()
-        labels_to_show = [0, 4, 8]
-        ax.legend([lines[l] for l in labels_to_show], [lines[l].get_label() for l in labels_to_show],
-                  ncol=len(labels_to_show))
-        ax.set_ylim([-1.1, 1.1])
-        ax = axes[1]
-        infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(qubit.dim_s, qubit.dim_s)), rho1) for x in xs.T]
-        ax.plot(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), infidelity)
-        ax.set_yscale('log')
-        fig.tight_layout()
-        fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
-
-        fig, ax = plt.subplots(1, figsize=(4, 3))
-        for row in us:
-            ax.step(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), np.hstack([row, row[-1]]), where='post')
-        max_u = np.max(np.abs(us))
-        ax.set_ylim([-max_u * 1.1, max_u * 1.1])
-        fig.tight_layout()
-        fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
+            fig, axes = plt.subplots(len(us), figsize=(3 * len(us), 3))
+            for irow, row in enumerate(us):
+                ax = axes[irow]
+                ax.step(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), np.hstack([row, row[-1]]), where='post',
+                        color=cmap(irow))
+                max_u = np.max(np.abs(us))
+                ax.set_ylim([-max_u * 1.1, max_u * 1.1])
+            fig.tight_layout()
+            fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
 
     def test_2level_vectorization(self):
         """
@@ -239,7 +242,7 @@ class TestAll(TestCase):
             # Manually form cost matrices
             Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
             Qf = Q
-            r_val = 1e-1
+            r_val = 1e-2
             R = r_val * np.identity(qubit.dim_u)
 
             # Set control problem
@@ -270,7 +273,7 @@ class TestAll(TestCase):
 
             # DIAGNOSTIC
             # **********
-            path = './../playground/2021_08_13_TwoLvl/' \
+            path = './../playground/2021_08_14_TwoLvl/' \
                    'steps{}_horiz{}_sat{}_dt{}{}_R{}/'.format(n_steps, horizon, sat, *str(dt).split('.'),
                                                               *str(int(abs(np.log10(r_val)))))
             transparent = False

@@ -31,8 +31,8 @@ def shift_guess(data):
     return np.hstack([data[:, 1:].reshape(-1, n - 1), data[:, -1].reshape(-1, 1)])
 
 
-def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=None, max_iter=10, exit_condition=None,
-        streaming=False, progress_bar=True, verbose=False):
+def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=None, du=None, max_iter=10,
+        exit_condition=None, streaming=False, progress_bar=True, verbose=False):
     # Set default mpc exit
     exit_code = 0
 
@@ -77,9 +77,9 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
                 # Catch bad optimization warning
                 warnings.simplefilter(action="error", category=UserWarning)
                 try:
-                    u_prev = us[a_step - 1] if a_step > 1 else np.zeros((dim_u, 1))
+                    u_prev = us[a_step - 1] if a_step > 1 else U_bm[:, 0].reshape(-1, 1)
                     X_opt, U_opt, obj_val, prob = quad_program(xs[a_step], X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls,
-                                                               u_prev, sat, verbose)
+                                                               u_prev, sat, du, verbose)
                 except Warning as w:
                     print(w)
                     exit_code = 2
@@ -95,7 +95,8 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
 
             # Check convergence
             # ^^^^^^^^^^^^^^^^^
-            if obj_prev < obj_val or np.isclose(obj_prev, obj_val, rtol=1e-05, atol=1e-08):
+            # a_step > 1 or
+            if a_step > 1 or obj_prev < obj_val or np.isclose(obj_prev, obj_val, rtol=1e-02, atol=1e-05):
                 iqp_exit_condition = True
             else:
                 # Update
@@ -115,14 +116,15 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
 
         # DIAGNOSTIC
         # if n_iter > 1:
-        #     path = '../playground/sequential_dt{}{}/'.format(*str(clock.dt).split('.'))
+        #     path = '../playground/2021_08_14_TwoLvl/sequential_dt{}{}/'.format(*str(clock.dt).split('.'))
         #     if not os.path.exists(path):
         #         os.makedirs(path)
         #     fig, axes = plt.subplots(2, 1)
         #     fig.suptitle('order={}, a_step={}, iter={}'.format(order, a_step, n_iter))
         #     for i, control in enumerate(_save_control):
         #         ax = axes[0]
-        #         ax.step(np.arange(len(control[0])), control[0], color='k', alpha=(i + 1) / (len(_save_control)))
+        #         ax.step(np.arange(len(control[0]) + 1), np.hstack([control[0], control[0][-1]]), color='k',
+        #                 alpha=(i + 1) / (len(_save_control)), where='post')
         #     ax = axes[1]
         #     ax.plot(np.arange(len(_save_state)), [np.linalg.norm(s - X_bm, 2) for s in _save_state])
         #     fig.savefig(path + 'seq_order{}_step{}_iter{}.png'.format(order, a_step, n_iter))
