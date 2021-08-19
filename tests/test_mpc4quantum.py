@@ -14,6 +14,8 @@ cmap = plt.get_cmap('tab10')
 # Default args for plot_operator
 imshow_args = {'norm': mpl.colors.SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3), 'cmap': plt.get_cmap('RdBu_r')}
 
+# TODO: Cost values need a to_string or ?
+
 
 def plot_operator(A, dim_x, args=imshow_args):
     dim_l = A.shape[1]//A.shape[0]
@@ -36,18 +38,14 @@ def plot_operator(A, dim_x, args=imshow_args):
 
 class TestAll(TestCase):
     def test_3level_drag(self):
-        for order in range(3, 4):
+        for order in range(1, 4):
             np.random.seed(1)
+
             # Parameters
             # ==========
-            # order = 2
+            du = 0.25
             sat = 1
-            # Clock
-            # -----
-            n_steps = 8
-            dt = 0.5
-            horizon = 8
-            clock = m4q.StepClock(dt, horizon, n_steps)
+            clock = m4q.StepClock(dt=0.25, horizon=8, n_steps=32)
 
             # Experiment
             # ==========
@@ -59,54 +57,47 @@ class TestAll(TestCase):
             measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
                             for j in range(qubit.dim_s)]
             A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
-            A_init = m4q.discretize_homogeneous(A_cts_list, dt, order)
+            A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
 
             # Cost
             # ====
-            # Manually form cost matrices_new
             Q = np.zeros((qubit.dim_x, qubit.dim_x))
             Q[0, 0] = 1
             Q[4, 4] = 1
             Q[8, 8] = 0
-            Qf = Q * 1
-            # Break symmetry
-            R = np.array([[1e-3, 0], [0, 1e-3]])  # 1e-3 * np.identity(qubit.dim_u)
+            Qf = Q * 1e1
+            # Break symmetry?
+            R = np.array([[1e-3, 0], [0, 1e-3]])
 
             # Avoid local min.--perturb. initial state slightly
-            Rx = qt.qip.operations.rx(1e-4)
+            Rx = qt.qip.operations.rx(1e-9)
             rho0 = qt.basis(qubit.dim_s, 0).proj()
             rho0.data[:2, :2] = Rx.dag() * rho0[:2, :2] * Rx
             rho1 = qt.basis(qubit.dim_s, 1).proj()
-            initial_state = rho0.data.toarray().flatten()
-            target_state = rho1.data.toarray().flatten()
+            initial_state = rho0.full().flatten()
+            target_state = rho1.full().flatten()
 
             # Benchmarks
             # ----------
-            X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.n_steps + 1))
-            t1 = np.linspace(0, n_steps * dt, n_steps, endpoint=False)
-            # u1 = qubit.u1(t1, {'A': 1, 't0': t1[0], 'tf': t1[-1], 'dt': dt})
-            U_bm = np.vstack([np.zeros_like(t1), np.zeros_like(t1)])
+            X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.horizon + 1))
+            U_bm = np.hstack([np.zeros((qubit.dim_u, 1))] * clock.horizon)
 
-            # Model (state-independent)
+            # Model (n.b. we're not using any data-driven machinery here.)
             # =====
             dim_lift = len(create_library(order, qubit.dim_u)[1:])
-            model1 = DiscrepDMDc.from_bootstrap(qubit.dim_x, qubit.dim_x, qubit.dim_x * dim_lift, A_init)
+            model1 = m4q.DMDc(qubit.dim_x, qubit.dim_x, qubit.dim_x * dim_lift, A_init)
 
             # Model predictive control
             # ========================
             data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1,
-                                              Q, R, Qf, sat=sat)
+                                              Q, R, Qf, sat=sat, du=du)
 
             # Save diagnostics
             # ================
-            # if diagnostic_plots:
-            path = './../playground/2021_08_16_DRAG_minus/'
+            path = './../playground/2021_08_16_DRAG/sat_{}_du_{}_{}/'.format(sat, du, clock.to_string())
             if not os.path.exists(path):
                 os.makedirs(path)
-
-            transparent = False
-            if not os.path.exists(path):
-                os.makedirs(path)
+            transparent=False
 
             fig, axes = plot_operator(model2.A, qubit.dim_x)
             fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
@@ -151,17 +142,12 @@ class TestAll(TestCase):
         # ==========
         sat = 1
         order = 2
-
-        # Clock
-        # -----
         n_train = 25
         dt = 0.5
 
         # Experiment
         # ==========
-        freqs = {'w0': np.pi,
-                 'w1': np.pi,
-                 'wR': np.pi}
+        freqs = {'w0': np.pi, 'w1': np.pi, 'wR': np.pi}
         qubit = RWA_Qubit(**freqs, A0=sat)
 
         # Exact solution
@@ -211,18 +197,13 @@ class TestAll(TestCase):
         """
         This code demonstrates some MPC controls and corresponding trajectories for a state transfer.\
         """
-        for order in range(2, 5):
+        for order in range(1, 5):
             np.random.seed(1)
             # Parameters
             # ==========
             sat = 1
-
-            # Clock
-            # -----
-            n_steps = 15
-            dt = 0.5
-            horizon = 15
-            clock = m4q.StepClock(dt, horizon, n_steps)
+            du = 0.1
+            clock = m4q.StepClock(dt=0.5, horizon=12, n_steps=24)
 
             # Experiment
             # ==========
@@ -235,18 +216,16 @@ class TestAll(TestCase):
             measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
                             for j in range(qubit.dim_s)]
             A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
-            A_init = m4q.discretize_homogeneous(A_cts_list, dt, order)
+            A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
 
             # Cost
             # ====
-            # Manually form cost matrices
             Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
-            Qf = Q
-            r_val = 1e-2
-            R = r_val * np.identity(qubit.dim_u)
+            Qf = Q * 1e1
+            R = 1e-2 * np.identity(qubit.dim_u)
 
             # Set control problem
-            Rx = qt.qip.operations.rx(1e-4)
+            Rx = qt.qip.operations.rx(1e-3)
             rho0 = Rx.dag() * qt.basis(qubit.dim_s, 0).proj() * Rx
             rho1 = qt.basis(qubit.dim_s, 1).proj()
             initial_state = rho0.data.toarray().flatten()
@@ -254,8 +233,8 @@ class TestAll(TestCase):
 
             # Benchmarks
             # ----------
-            X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.n_steps + 1))
-            U_bm = np.hstack([np.zeros([qubit.dim_u, 1])] * clock.n_steps)
+            X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.horizon + 1))
+            U_bm = np.hstack([np.zeros([qubit.dim_u, 1])] * clock.horizon)
 
             # Model (n.b. we're not using any data-driven machinery here.)
             # =====
@@ -264,18 +243,12 @@ class TestAll(TestCase):
 
             # Model predictive control
             # ========================
-            try:
-                data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE,
-                                                  model1, Q, R, Qf, sat=sat)
-            except Exception as e:
-                print(e)
-                # continue
+            data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1,
+                                              Q, R, Qf, sat=sat, du=du)
 
             # DIAGNOSTIC
             # **********
-            path = './../playground/2021_08_14_TwoLvl/' \
-                   'steps{}_horiz{}_sat{}_dt{}{}_R{}/'.format(n_steps, horizon, sat, *str(dt).split('.'),
-                                                              *str(int(abs(np.log10(r_val)))))
+            path = './../playground/2021_08_18_TwoLvl/sat_{}_du_{}_{}/'.format(sat, du, clock.to_string())
             transparent = False
             if not os.path.exists(path):
                 os.makedirs(path)

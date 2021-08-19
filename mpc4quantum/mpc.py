@@ -25,6 +25,22 @@ class StepClock:
     def ts_step(self, a_step):
         return np.linspace(self.dt * a_step, self.dt * (a_step + 1), 2)
 
+    def ts_horizon(self, a_step):
+        return np.linspace(self.dt * a_step, self.dt * (a_step + self.horizon), self.horizon, endpoint=False)
+
+    def to_string(self):
+        dt_str = ['dt', f'{self.dt:.2E}']
+        horiz_str = ['h', f'{self.horizon:.2E}']
+        ns_str = ['n', f'{self.n_steps:.2E}']
+        res = []
+        for s in [dt_str, horiz_str, ns_str]:
+            name, label = s
+            res.append(name)
+            label = label.replace('.','d')
+            label = label.replace('-','m').replace('+','p')
+            res.append(label)
+        return '_'.join(res)
+
 
 def shift_guess(data):
     _, n = data.shape
@@ -42,13 +58,13 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
     us = [None] * clock.n_steps
 
     # Set guess to initial value (a la SDRE)
-    X_guess = np.hstack([x0.reshape(-1, 1)] * (clock.n_steps + 1))
-    U_guess = np.hstack([np.zeros([dim_u, 1])] * clock.n_steps)
+    X_guess = np.hstack([x0.reshape(-1, 1)] * (clock.horizon + 1))
+    U_guess = np.hstack([np.zeros([dim_u, 1])] * clock.horizon)
 
     # Stretch Q, R
-    Q_ls = [Q] * clock.n_steps
+    Q_ls = [Q] * clock.horizon
     Q_ls.append(Qf)
-    R_ls = [R] * clock.n_steps
+    R_ls = [R] * clock.horizon
 
     # Wrap (A, N) model to permit local approximations
     # TODO: We want the ability to also use linear models in this way.
@@ -67,7 +83,7 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
         # _save_control = []
         # _save_state = []
         while not iqp_exit_condition and n_iter < max_iter:
-            A_ls, B_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts)
+            A_ls, B_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts_horizon(a_step))
 
             # Run QP
             # ^^^^^^
@@ -95,8 +111,8 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
 
             # Check convergence
             # ^^^^^^^^^^^^^^^^^
-            # a_step > 1 or
-            if a_step > 1 or obj_prev < obj_val or np.isclose(obj_prev, obj_val, rtol=1e-02, atol=1e-05):
+            # Assume that the shifted solutions are not far from the previous optimum; don't re-optimize.
+            if a_step > 1 or obj_prev < obj_val or np.isclose(obj_prev, obj_val, rtol=1e-02, atol=1e-04):
                 iqp_exit_condition = True
             else:
                 # Update
