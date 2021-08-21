@@ -230,7 +230,7 @@ class QSynthesis(Experiment):
         # Check is 'us' is a function or an ndarray
         self.us, u_dim = _wrap_us(us)
         self.set('H', [self.H0] + [[self.H1_list[i_row], self.us[i_row]] for i_row in range(u_dim)])
-        # Catch a qutip bug for ts <= 2.
+        # Catch a qutip 'feature' for ts <= 2.
         # Unitary mode 'single' avoids the need to check if dtype is Qobj or memoryview
         if len(self.ts) > 2:
             self.set('t', self.ts)
@@ -243,5 +243,6 @@ class QSynthesis(Experiment):
         # Append the initial condition to the resulting ndarrays via multiplication, U(t, t0) @ U(t0, 0)
         if len(self.xs) > 0:
             if self.xs[0]:
-                self.xs = np.vstack([(xi * x0).data.toarray().flatten() for xi in self.xs]).T
+                # Multiply in full (states in xs or x0 might be in tensor product spaces)
+                self.xs = np.vstack([(xi.full() @ x0.full()).flatten() for xi in self.xs]).T
         return self.xs

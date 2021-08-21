@@ -36,8 +36,9 @@ class StepClock:
         for s in [dt_str, horiz_str, ns_str]:
             name, label = s
             res.append(name)
+            label = label.replace('E', 'e')
             label = label.replace('.','d')
-            label = label.replace('-','m').replace('+','p')
+            label = label.replace('-','m').replace('+','')
             res.append(label)
         return '_'.join(res)
 
@@ -112,6 +113,7 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
             # Check convergence
             # ^^^^^^^^^^^^^^^^^
             # Assume that the shifted solutions are not far from the previous optimum; don't re-optimize.
+            # a_step > 1 or
             if a_step > 1 or obj_prev < obj_val or np.isclose(obj_prev, obj_val, rtol=1e-02, atol=1e-04):
                 iqp_exit_condition = True
             else:
