@@ -2,6 +2,9 @@ import numpy as np
 from itertools import combinations
 
 
+# TODO: Is the Taylor expansion along the discrete operators appropriate? Compare to continuous.
+
+
 class WrapModel:
     """
     Assumes a model with a polynomial control library up to a given order. There are likely other assumptions

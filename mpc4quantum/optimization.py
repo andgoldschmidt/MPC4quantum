@@ -21,8 +21,11 @@ from scipy.linalg import sqrtm
 #
 #     # QP
 #     for t in range(horizon):
-#         cost += cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]) + cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t])
-#         constr += [X[:, t + 1] == A_ls[t] @ X[:, t] + B_ls[t] @ U[:, t]]
+#         cost += cp.real(cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]))
+#         cost += cp.real(cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t]))
+#         # Taylor series:
+#         # dx/dt = f(x, u) \approx f(xg, ug) + df/dx(xg, ug) (x - xg) + df/du(xg, ug) (u - ug)
+#         constr += [X[:, t + 1] == A_ls[t] @ X[:, t] + B_ls[t] @ (U[:, t] - U_bm[:, t])]
 #         constr += [cp.norm(U[:, t], 'inf') <= sat]
 #         if du is not None and t > 1:
 #             constr += [cp.norm(U[:, t] - U[:, t - 1], 'inf') <= du]
@@ -67,10 +70,12 @@ def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, 
     # Dynamics constraints
     # note: individual constraints for each time improve optimization success (empirical claim);
     #       this is in contrast to a single RHS == LHS for all times.
+    # Taylor series:
+    # dx/dt = f(x, u) \approx f(xg, ug) + df/dx(xg, ug) (x - xg) + df/du(xg, ug) (u - ug)
     constr = []
     constr += [X[:dim_x] == x0]
     for t in range(horizon):
-        RHS = A_ls[t] @ X[t * dim_x: (t + 1) * dim_x] + B_ls[t] @ U[t * dim_u: (t + 1) * dim_u]
+        RHS = A_ls[t] @ X[t * dim_x: (t + 1) * dim_x] + B_ls[t] @ (U[t * dim_u: (t + 1) * dim_u] - U_bm[:, t])
         LHS = X[(t + 1) * dim_x: (t + 2) * dim_x]
         constr += [LHS == RHS]
         # constr += [cp.norm(LHS - RHS, 'inf') <= 1e-3]
@@ -84,7 +89,7 @@ def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, 
         constr += [cp.norm(U[:dim_u] - u_prev.flatten(), 'inf') <= du]
 
     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
-    obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)
+    obj_val = prob.solve()  # solver=cp.ECOS, verbose=verbose)
     X_reshape = X.value if X.value is None else X.value.reshape(horizon + 1, dim_x).T
     U_reshape = U.value if U.value is None else U.value.reshape(horizon, dim_u).T
     return X_reshape, U_reshape, obj_val, prob

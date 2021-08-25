@@ -16,7 +16,7 @@ imshow_args = {'norm': mpl.colors.SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3), '
 
 # TODO: Cost values need a to_string or ?
 # Set root
-rootname = '2021_08_20'
+rootname = '2021_08_23'
 
 
 def plot_operator(A, dim_x, args=imshow_args):
@@ -37,8 +37,112 @@ def plot_operator(A, dim_x, args=imshow_args):
     fig.colorbar(im, cax=cbar_ax)
     return fig, axes
 
+# ***********************
+# Gate synthesis examples
+# ***********************
 
-class TestAll(TestCase):
+
+class TestGateSynth(TestCase):
+    def test_NOT_gate(self):
+        for order in range(1, 5):
+            # Parameters
+            # ==========
+            sat = 1
+            du = .25
+            clock = m4q.StepClock(dt=0.05, horizon=15, n_steps=50)
+
+            # Experiment
+            # ==========
+            freqs = {'w0': np.pi, 'w1': np.pi, 'wR': np.pi}
+            qubit = RWA_Qubit(**freqs, A0=sat)
+            gate_synth = m4q.QSynthesis(qubit.H_list[0], [qubit.H_list[1]])
+
+            # Model
+            # =====
+            As_cts_list = [-1j * np.kron(np.kron(h, np.identity(2)) - np.kron(np.identity(2), h.conj()), np.identity(4))
+                           for h in qubit.H_list]
+            A_init = m4q.discretize_homogeneous(As_cts_list, clock.dt, order)
+
+            # DMDc object
+            dim_lift = len(create_library(order, qubit.dim_u)[1:])
+            dim_process = qubit.dim_x ** 2
+            model1 = m4q.DMDc(dim_process, dim_process, dim_process * dim_lift, A_init)
+
+            # Operations
+            Rx = qt.qip.operations.rx(1e-3)
+            U0 = Rx * qt.identity(2)
+            Uf = qt.sigmax()
+            p0 = qt.tensor(U0, U0.conj()).full().flatten()
+            pf = qt.tensor(Uf, Uf.conj()).full().flatten()
+
+            # Benchmarks
+            # ==========
+            P_bm = np.hstack([pf.reshape(-1, 1)] * (clock.horizon + 1))
+            U_bm = np.hstack([np.ones([qubit.dim_u, 1]) * .5] * clock.horizon)
+
+            # Cost
+            # ====
+            Q = np.identity(len(p0))
+            Qf = Q * 1e1
+            R = np.identity(qubit.dim_u) * 1e-2
+
+            # MPC
+            # ===
+            def exit_condition(p2, p1, u1):
+                return ((p1 - pf).conj().T @ Q @ (p1 - pf)).real < 1e-2
+
+            data, model2, exit_code = m4q.mpc(p0, qubit.dim_u, order, P_bm, U_bm, clock, gate_synth, model1,
+                                              Q, R, Qf, sat=sat, du=du, exit_condition=exit_condition)
+            ps, us = data
+
+            # Save diagnostics
+            # ================
+            path = './../playground/{}_NOT_gate/sat_{}_du_{}_{}/'.format(rootname, sat, du, clock.to_string())
+            if not os.path.exists(path):
+                os.makedirs(path)
+            transparent = False
+            if np.any(us):
+                tsp1 = np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt])
+
+                fig, ax = plt.subplots(1)
+                ax.step(tsp1, np.hstack([us[0], us[0, -1]]), where='post')
+                ax.set_ylim(-1.1, 1.1)
+                fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
+
+                def plot_state_prediction(psi0, name):
+                    psi0 = psi0 / psi0.norm()
+                    rho0 = psi0.proj().full().reshape(-1, 1)
+                    xs = [None] * ps.shape[1]
+                    for i, p in enumerate(ps.T):
+                        xs[i] = p.reshape((2 ** 2, 2 ** 2)) @ rho0
+                    xs = np.hstack(xs)
+                    fig, axes = plt.subplots(1, 4, figsize=[3 * 4 + 3, 3])
+                    for i in range(4):
+                        ax = axes[i]
+                        ax.plot(tsp1, xs[i].real, ls='-', color=cmap(i))
+                        ax.plot(tsp1, xs[i].imag, ls='--', color=cmap(i))
+                        ax.set_ylim([-1.1, 1.1])
+                    fig.tight_layout()
+                    fig.savefig(path + '{}_order_{}.png'.format(name, order), transparent=transparent)
+
+                # Example state preparations based on gate
+                state = qt.basis(2, 0)
+                plot_state_prediction(state, '1psi0')
+                state = -3 * qt.basis(2, 1) + qt.basis(2, 0)
+                plot_state_prediction(state, 'n3psi1_1psi0')
+
+                fig, ax = plt.subplots(1)
+                ax.plot(tsp1, [((p - pf).conj().T @ Q @ (p - pf)).real for p in ps.T])
+                ax.set_ylim([1e-3, 1e1])
+                ax.set_yscale('log')
+                fig.savefig(path + 'cost_order_{}.png'.format(order), transparent=transparent)
+
+# **************************
+# State preparation examples
+# **************************
+
+
+class TestStatePrep(TestCase):
     def test_CNOT_state(self):
         # System, Part I
         # **************
@@ -70,7 +174,7 @@ class TestAll(TestCase):
             # **********
             sat = 1
             du = 0.25
-            clock = m4q.StepClock(dt=0.25, horizon=10, n_steps=75)
+            clock = m4q.StepClock(dt=0.25, horizon=10, n_steps=50)
 
             # System, Part II
             # ***************
@@ -85,24 +189,15 @@ class TestAll(TestCase):
 
             # Experiment
             # ----------
-            # experiment = m4q.QSynthesis(H_list[0], [H_list[i] for i in range(1, dim_u + 1)])
             experiment = m4q.QExperiment(H_list[0], [H_list[i] for i in range(1, dim_u + 1)])
 
             # Objective
             # *********
-            # Gate states
-            # -----------
-            # Unitary0 = qt.tensor(qt.identity(2), qt.identity(2))
-            # Unitary1 = qt.Qobj(np.block([[qt.identity(2), np.zeros((2, 2))], [np.zeros((2, 2)), qt.sigmax()]]))
-            # inital_state = Unitary0.full().flatten()
-            # target_state = Unitary1.full().flatten()
-
             # States
             # ------
             Rx1 = qt.qip.operations.rx(-1e-3)
             Rx2 = qt.qip.operations.rx(1e-4)
             rho0 = qt.tensor(Rx1 * qt.basis(2, 0).proj() * Rx1.dag(), Rx2 * qt.basis(2, 0).proj() * Rx2.dag())
-            # rho0 = qt.tensor(qt.basis(2, 0).proj(), qt.basis(2, 0).proj())
             rho1 = qt.tensor(qt.basis(2, 0).proj(), qt.basis(2, 1).proj())
             initial_state = rho0.full().flatten()
             target_state = rho1.full().flatten()
@@ -160,7 +255,7 @@ class TestAll(TestCase):
                     ax.set_ylim([-.1, 1.1])
             fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
 
-    def test_3level_drag(self):
+    def test_DRAG_state(self):
         """
         The parameters are sensitive but these should produce a control that looks like the familiar DRAG scheme.
         """
@@ -255,7 +350,7 @@ class TestAll(TestCase):
             fig.tight_layout()
             fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
 
-    def test_2level_vectorization(self):
+    def test_vectorization(self):
         """
         This test provides a minimal example for generating a trajectory using the model constructed from the
         vectorization utilities in mpc4quantum.vectorization.
@@ -317,7 +412,7 @@ class TestAll(TestCase):
         # Say 90% of the data points are close, as a rough check
         assert num_close / num_total > .9
 
-    def test_2level_control(self):
+    def test_NOT_state(self):
         """
         This code demonstrates some MPC controls and corresponding trajectories for a state transfer.
         """
@@ -372,7 +467,7 @@ class TestAll(TestCase):
 
             # DIAGNOSTIC
             # **********
-            path = './../playground/{}_TwoLvl/sat_{}_du_{}_{}/'.format(rootname, sat, du, clock.to_string())
+            path = './../playground/{}_NOT/sat_{}_du_{}_{}/'.format(rootname, sat, du, clock.to_string())
             transparent = False
             if not os.path.exists(path):
                 os.makedirs(path)

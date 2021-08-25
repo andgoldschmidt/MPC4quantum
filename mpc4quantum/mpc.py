@@ -103,7 +103,7 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
                     break
             # Catch failure
             # ^^^^^^^^^^^^^
-            if obj_val is np.inf:
+            if np.isinf(obj_val):
                 warnings.warn("Solution was infinite (failed to converge). Inspect the model for accuracy, "
                               "check if control constraints can regularize the problem, "
                               "or run with verbose=True for more information.")
@@ -149,13 +149,15 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
 
         # Simulate
         # --------
+        # TODO: This is logical issue. Is xs a list of model state or experiment states? What is experiment's in/out?
         # -- Apply the control to the experiment (lift/proj to convert between model state and simulation state).
-        # -- Alternatively, close the loop with the model: model.predict(xk, krtimes(lift(uk), xk))
+        # -- I.e., next_xk = experiment.lift(experiment.simulate(xk, tk, uk))
+        # -- Alternatively, close the loop with the model: next_xk = model.predict(xk, krtimes(lift(uk), xk))
         us[a_step] = U_opt[:, 0]
         ts_step = clock.ts_step(a_step)
         u_fns = interp1d(ts_step, np.vstack([us[a_step], us[a_step]]).T, fill_value='extrapolate', kind='previous',
                          assume_sorted=True)
-        result = experiment.simulate(experiment.proj(xs[a_step]), ts_step, u_fns)
+        result = experiment.simulate(xs[a_step], ts_step, u_fns)
         xs[a_step + 1] = result[:, -1]
 
         # Shift guess

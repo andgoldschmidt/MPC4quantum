@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from qutip import mesolve, propagator, Qobj
+from qutip import mesolve, propagator, Qobj, tensor
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
+
+# TODO: What should simulate return? Proj or lift?
 
 
 class Experiment(ABC):
@@ -204,6 +206,33 @@ class QExperiment(Experiment):
         return self.xs
 
 
+def split_blocks(bmatrix, nrows, ncols):
+    """
+    Split a block matrix into sub-blocks.
+    https://stackoverflow.com/questions/11105375/
+    """
+    r, h = bmatrix.shape
+    return bmatrix.reshape(h // nrows, nrows, -1, ncols).swapaxes(1, 2).reshape(-1, nrows, ncols)
+
+
+def isqrt(n):
+    """
+    Integer square root (can replace with math.isqrt if Python >= 3.8).
+    https://stackoverflow.com/questions/15390807/
+    """
+    if n > 0:
+        x = 1 << (n.bit_length() + 1 >> 1)
+        while True:
+            y = (x + n // x) >> 1
+            if y >= x:
+                return x
+            x = y
+    elif n == 0:
+        return 0
+    else:
+        raise ValueError("Square root not defined for negative numbers.")
+
+
 class QSynthesis(Experiment):
     """
     The QSynthesis class implements qutip's propogator to solve quantum gate synthesis.
@@ -223,26 +252,66 @@ class QSynthesis(Experiment):
         """
         self._prop_args[key] = value
 
+    @staticmethod
+    def lift(U):
+        """
+        By way of analogy, the process matrix P is the density matrix rho for a unitary operator U.
+        It is defined under a presumed vectorization of rho using numpy's flatten s.t. P = U \otimes U^*.
+
+        :param U: A unitary matrix of shape (n^2,).
+        :return: The flat process operator (n^4,) associated to the provided unitary.
+        """
+        #
+        n = isqrt(U.shape[0])
+        U = U.reshape(n, n)
+        return np.kron(U, U.conj()).flatten()
+
+    @staticmethod
+    def proj(P):
+        """
+        Shape the process matrix P = U \otimes U^* into a single propagator, U.
+
+        :param P: The process matrix of shape (n^4,).
+        :return: A unitary operator equivalent to P (up to global phase).
+        """
+        # Shape the initial condition (U \otimes U^*) into a single propagator, U.
+        n = isqrt(isqrt(P.shape[0]))
+        blocks = split_blocks(P.reshape(n ** 2, n ** 2), n, n)
+        U = np.zeros((n, n))
+        # Look for a nonzero block, and divide out the prefactor from the kronecker product.
+        for i, val in enumerate([np.any(b) for b in blocks]):
+            if val:
+                # Complex square root (allow negative numbers)
+                U = blocks[i].conj() / np.lib.scimath.sqrt(blocks[i].flatten()[i])
+                break
+        return U.flatten()
+
     def simulate(self, x0, ts, us):
-        # Shape the initial condition into a propagator
-        x0 = Qobj(x0.reshape(*self.H0.shape))
-        self.ts = ts
+        # The initial condition is a single unitary U (its lifted state is U \otimes U^*)
+        n = self.H0.shape[1]
+        x0 = Qobj(self.proj(x0).reshape(n, n))
+
         # Check is 'us' is a function or an ndarray
         self.us, u_dim = _wrap_us(us)
         self.set('H', [self.H0] + [[self.H1_list[i_row], self.us[i_row]] for i_row in range(u_dim)])
-        # Catch a qutip 'feature' for ts <= 2.
-        # Unitary mode 'single' avoids the need to check if dtype is Qobj or memoryview
+        self.ts = ts
+
+        # Cases: Avoid hitting a qutip 'feature' for ts <= 2.
         if len(self.ts) > 2:
             self.set('t', self.ts)
+            # Unitary mode 'single' avoids the need to check if dtype is Qobj or memoryview
             self.xs = propagator(**self._prop_args, unitary_mode='single')
         else:
             self.xs = [None] * len(self.ts)
             for i, t in enumerate(self.ts):
                 self.set('t', t)
                 self.xs[i] = propagator(**self._prop_args, unitary_mode='single')
+
         # Append the initial condition to the resulting ndarrays via multiplication, U(t, t0) @ U(t0, 0)
         if len(self.xs) > 0:
-            if self.xs[0]:
-                # Multiply in full (states in xs or x0 might be in tensor product spaces)
-                self.xs = np.vstack([(xi.full() @ x0.full()).flatten() for xi in self.xs]).T
+            #  Full multiplication, states might be in tensor product spaces. Qobj to match output of propagator.
+            self.xs = [Qobj(xi.full() @ x0.full()) for xi in self.xs]
+
+        # Lift the results (U \otimes U^*)
+        self.xs = np.vstack([self.lift(xi.full().flatten()) for xi in self.xs]).T
         return self.xs
