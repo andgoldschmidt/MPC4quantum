@@ -16,7 +16,7 @@ imshow_args = {'norm': mpl.colors.SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3), '
 
 # TODO: Cost values need a to_string or ?
 # Set root
-rootname = '2021_08_23'
+rootname = '2021_08_31'
 
 
 def plot_operator(A, dim_x, args=imshow_args):
@@ -416,32 +416,38 @@ class TestStatePrep(TestCase):
         """
         This code demonstrates some MPC controls and corresponding trajectories for a state transfer.
         """
-        for order in range(1, 5):
+        for order in range(1, 3):
             np.random.seed(1)
             # Parameters
             # ==========
-            sat = 1
-            du = 0.1
-            clock = m4q.StepClock(dt=0.5, horizon=12, n_steps=24)
+            clock = m4q.StepClock(dt=2, horizon=12, n_steps=24)
+            sat = 0.5 * (1 / clock.dt)
+            du = 0.1 * sat
 
             # Experiment
             # ==========
-            freqs = {'w0': np.pi, 'w1': np.pi, 'wR': np.pi}
-            qubit = RWA_Qubit(**freqs, A0=sat)
+            wq = 2 * np.pi * 0.5 * (1 / clock.dt)
+            freqs = {'w0': wq, 'w1': wq, 'wR': wq}
+            qubit = RWA_Qubit(**freqs, A0=1)
 
             # Exact model
-            # -------------
+            # -----------
             # Construct |i><j| basis.
             measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
                             for j in range(qubit.dim_s)]
             A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
             A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
 
+            # # Add discrepancy to qubit
+            # # ------------------------
+            # freqs['w0'] = freqs['w0']
+            # qubit = RWA_Qubit(**freqs, A0=sat)
+
             # Cost
             # ====
             Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
             Qf = Q * 1e1
-            R = 1e-2 * np.identity(qubit.dim_u)
+            R = 1e-2 / sat**2 * np.identity(qubit.dim_u)
 
             # Set control problem
             Rx = qt.qip.operations.rx(1e-3)

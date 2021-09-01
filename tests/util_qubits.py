@@ -3,6 +3,8 @@ from mpc4quantum import QExperiment
 import numpy as np
 import qutip as qt
 
+# The qubits are supposed to represent the true physical system, unlike the model which  is our idealization.
+
 
 def blackman(ts, t0, tf, dt):
     """
