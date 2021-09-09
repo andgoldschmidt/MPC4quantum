@@ -11,7 +11,7 @@ def _quad_form(x, Q):
     return multi_dot([_dag(x), Q, x])[0, 0].real
 
 
-def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, verbose=False):
+def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, du=None, verbose=False):
     # Shapes
     dim_u, horizon = U_bm.shape
     dim_x, _ = X_bm.shape
@@ -69,6 +69,7 @@ def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, 
     X_opt = [None] * (horizon + 1)
     X_opt[0] = X0
     cost = 0
+    # Run forward simualtion
     for t in range(horizon):
         dX = X_opt[t] - X_bm[:, t].reshape(-1, 1)
         U_opt[t] = Gains[t] @ np.vstack([dX, 1]) + U_bm[:, t].reshape(-1, 1)

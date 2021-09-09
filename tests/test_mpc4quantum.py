@@ -16,7 +16,7 @@ imshow_args = {'norm': mpl.colors.SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3), '
 
 # TODO: Cost values need a to_string or ?
 # Set root
-rootname = '2021_08_31'
+rootname = '2021_09_08_v2'
 
 
 def plot_operator(A, dim_x, args=imshow_args):
@@ -54,7 +54,7 @@ class TestGateSynth(TestCase):
             # Experiment
             # ==========
             freqs = {'w0': np.pi, 'w1': np.pi, 'wR': np.pi}
-            qubit = RWA_Qubit(**freqs, A0=sat)
+            qubit = RWA_Qubit(**freqs)
             gate_synth = m4q.QSynthesis(qubit.H_list[0], [qubit.H_list[1]])
 
             # Model
@@ -91,8 +91,8 @@ class TestGateSynth(TestCase):
             def exit_condition(p2, p1, u1):
                 return ((p1 - pf).conj().T @ Q @ (p1 - pf)).real < 1e-2
 
-            data, model2, exit_code = m4q.mpc(p0, qubit.dim_u, order, P_bm, U_bm, clock, gate_synth, model1,
-                                              Q, R, Qf, sat=sat, du=du, exit_condition=exit_condition)
+            data, model2, exit_code = m4q.mpc(p0, qubit.dim_u, order, P_bm, U_bm, clock, gate_synth, model1, Q, R, Qf,
+                                              sat=sat, du=du, exit_condition=exit_condition)
             ps, us = data
 
             # Save diagnostics
@@ -137,219 +137,13 @@ class TestGateSynth(TestCase):
                 ax.set_yscale('log')
                 fig.savefig(path + 'cost_order_{}.png'.format(order), transparent=transparent)
 
-# **************************
-# State preparation examples
-# **************************
+
+# *******************
+# Functionality tests
+# *******************
 
 
-class TestStatePrep(TestCase):
-    def test_CNOT_state(self):
-        # System, Part I
-        # **************
-        H0_z12 = qt.Qobj(qt.tensor(qt.sigmaz(), qt.sigmaz()).full())
-        H_y2 = qt.Qobj(qt.tensor(qt.identity(2), qt.sigmay()).full())
-        H_z1 = qt.Qobj(qt.tensor(qt.sigmaz(), qt.identity(2)).full())
-        H_z2 = qt.Qobj(qt.tensor(qt.identity(2), qt.sigmaz()).full())
-        H_list = [H0_z12, H_y2, H_z1, H_z2]
-
-        dim_u = 3
-        dim_s = 4
-        dim_x = dim_s ** 2
-
-        # Counting basis
-        # ^^^^^^^^^^^^^^
-        proj_list = [qt.basis(2, i) * qt.basis(2, j).dag() for i in range(2) for j in range(2)]
-        measure_list = [qt.Qobj(qt.tensor(i, j).full()) for i in proj_list for j in proj_list]
-        # Spin basis
-        # ^^^^^^^^^^
-        # proj_list = [qt.identity(2), qt.sigmax(), qt.sigmay(), qt.sigmaz()]
-        # measure_list = [qt.tensor(i, j) for i in proj_list for j in proj_list]
-
-        # Vectorize
-        A_cts_list = [m4q.vectorize_me(H, measure_list) for H in H_list]
-
-        for order in range(1, 5):
-            np.random.seed(1)
-            # Parameters
-            # **********
-            sat = 1
-            du = 0.25
-            clock = m4q.StepClock(dt=0.25, horizon=10, n_steps=50)
-
-            # System, Part II
-            # ***************
-            # Discretize
-            # ----------
-            A_dst = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
-
-            # Model
-            # -----
-            dim_lift = len(m4q.create_library(order, dim_u)[1:])
-            model1 = m4q.DMDc(dim_x, dim_x, dim_x * dim_lift, A_dst)
-
-            # Experiment
-            # ----------
-            experiment = m4q.QExperiment(H_list[0], [H_list[i] for i in range(1, dim_u + 1)])
-
-            # Objective
-            # *********
-            # States
-            # ------
-            Rx1 = qt.qip.operations.rx(-1e-3)
-            Rx2 = qt.qip.operations.rx(1e-4)
-            rho0 = qt.tensor(Rx1 * qt.basis(2, 0).proj() * Rx1.dag(), Rx2 * qt.basis(2, 0).proj() * Rx2.dag())
-            rho1 = qt.tensor(qt.basis(2, 0).proj(), qt.basis(2, 1).proj())
-            initial_state = rho0.full().flatten()
-            target_state = rho1.full().flatten()
-
-            # Benchmarks
-            # ----------
-            X_bm = np.hstack([target_state[:, None]] * (clock.horizon + 1))
-            U_bm = np.hstack([np.zeros((dim_u, 1))] * clock.horizon)
-
-            # Cost
-            # ----
-            Q = np.zeros((dim_x, dim_x))
-            nonzero_cost = [0, 5, 10, 15]
-            for i in nonzero_cost:
-                Q[i, i] = 1
-            Qf = Q * 1e1
-            R = np.identity(dim_u) * 1e-4
-
-            # MPC
-            # ***
-            data, model2, exit_code = m4q.mpc(initial_state, dim_u, order, X_bm, U_bm, clock, experiment, model1,
-                                              Q, R, Qf, sat=sat, du=du)
-
-            xs, us = data
-            tsplus1 = np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt])
-
-            # Save diagnostics
-            # ================
-            path = './../playground/{}_CNOT/sat_{}_du_{}_{}/'.format(rootname, sat, du, clock.to_string())
-            if not os.path.exists(path):
-                os.makedirs(path)
-            transparent = False
-
-            fig, axes = plt.subplots(1, dim_u, figsize=[4 * 3 + 2, 3])
-            for i in range(dim_u):
-                ax = axes[i]
-                ax.step(tsplus1, np.hstack([us[i], us[i][-1]]), where='post')
-            fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
-
-            fig, ax = plt.subplots(1, figsize=[4,3])
-            full_rho1 = qt.Qobj(rho1.full())
-            infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(dim_s, dim_s)), full_rho1) for x in xs.T]
-            ax.plot(tsplus1, infidelity)
-            ax.set_yscale('log')
-            fig.tight_layout()
-            fig.savefig(path + 'cost_order_{}.png'.format(order), transparent=transparent)
-
-            fig, axes = plt.subplots(1, 4, figsize=[4 * 4 + 3, 3])
-            j = 0
-            for i in range(dim_x):
-                if i in nonzero_cost:
-                    ax = axes[j]
-                    ax.plot(tsplus1, xs[i].real, c=cmap(j))
-                    j = j + 1
-                    ax.set_ylim([-.1, 1.1])
-            fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
-
-    def test_DRAG_state(self):
-        """
-        The parameters are sensitive but these should produce a control that looks like the familiar DRAG scheme.
-        """
-        for order in range(1, 4):
-            np.random.seed(1)
-
-            # Parameters
-            # ==========
-            du = 0.25
-            sat = 1
-            clock = m4q.StepClock(dt=0.25, horizon=8, n_steps=32)
-
-            # Experiment
-            # ==========
-            freqs = {'delta': -0.06, 'A0': 1}
-            qubit = RWA_Transmon(**freqs)
-
-            # Initial model
-            # -------------
-            measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
-                            for j in range(qubit.dim_s)]
-            A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
-            A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
-
-            # Cost
-            # ====
-            Q = np.zeros((qubit.dim_x, qubit.dim_x))
-            Q[0, 0] = 1
-            Q[4, 4] = 1
-            Q[8, 8] = 0
-            Qf = Q * 1e1
-            # Break symmetry?
-            R = np.array([[1e-3, 0], [0, 1e-3]])
-
-            # Avoid local min.--perturb. initial state slightly
-            Rx = qt.qip.operations.rx(1e-9)
-            rho0 = qt.basis(qubit.dim_s, 0).proj()
-            rho0.data[:2, :2] = Rx.dag() * rho0[:2, :2] * Rx
-            rho1 = qt.basis(qubit.dim_s, 1).proj()
-            initial_state = rho0.full().flatten()
-            target_state = rho1.full().flatten()
-
-            # Benchmarks
-            # ----------
-            X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.horizon + 1))
-            U_bm = np.hstack([np.zeros((qubit.dim_u, 1))] * clock.horizon)
-
-            # Model (n.b. we're not using any data-driven machinery here.)
-            # =====
-            dim_lift = len(create_library(order, qubit.dim_u)[1:])
-            model1 = m4q.DMDc(qubit.dim_x, qubit.dim_x, qubit.dim_x * dim_lift, A_init)
-
-            # Model predictive control
-            # ========================
-            data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1,
-                                              Q, R, Qf, sat=sat, du=du)
-
-            # Save diagnostics
-            # ================
-            path = './../playground/{}_DRAG/sat_{}_du_{}_{}/'.format(rootname, sat, du, clock.to_string())
-            if not os.path.exists(path):
-                os.makedirs(path)
-            transparent=False
-
-            fig, axes = plot_operator(model2.A, qubit.dim_x)
-            fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
-            xs, us = data
-            fig, axes = plt.subplots(2, 1)
-            ax = axes[0]
-            ilabels = [0, 4, 8]
-            for irow, row in enumerate(xs[:, :-1]):
-                ilabel = 'r{}'.format(np.base_repr(irow, base=3).zfill(2))
-                ax_args = {'marker': '.', 'markerfacecolor': 'None', 'label': ilabel, 'alpha': 1}
-                if irow in ilabels:
-                    ax.plot(clock.ts_sim, row.real, **ax_args)
-            ax.legend()
-            ax.set_ylim([-1.1, 1.1])
-            ax = axes[1]
-            infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(qubit.dim_s, qubit.dim_s)), rho1) for x in xs.T]
-            ax.plot(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), infidelity)
-            ax.set_yscale('log')
-            fig.tight_layout()
-            fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
-
-            fig, axes = plt.subplots(len(us), figsize=(3 * len(us), 3))
-            for irow, row in enumerate(us):
-                ax = axes[irow]
-                ax.step(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), np.hstack([row, row[-1]]), where='post',
-                        color=cmap(irow))
-                max_u = np.max(np.abs(us))
-                ax.set_ylim([-max_u * 1.1, max_u * 1.1])
-            fig.tight_layout()
-            fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
-
+class TestFunctionality(TestCase):
     def test_vectorization(self):
         """
         This test provides a minimal example for generating a trajectory using the model constructed from the
@@ -359,7 +153,6 @@ class TestStatePrep(TestCase):
         """
         # Parameters
         # ==========
-        sat = 1
         order = 2
         n_train = 25
         dt = 0.5
@@ -367,7 +160,7 @@ class TestStatePrep(TestCase):
         # Experiment
         # ==========
         freqs = {'w0': np.pi, 'w1': np.pi, 'wR': np.pi}
-        qubit = RWA_Qubit(**freqs, A0=sat)
+        qubit = RWA_Qubit(**freqs)
 
         # Exact solution
         # ==============
@@ -412,54 +205,166 @@ class TestStatePrep(TestCase):
         # Say 90% of the data points are close, as a rough check
         assert num_close / num_total > .9
 
-    def test_NOT_state(self):
-        """
-        This code demonstrates some MPC controls and corresponding trajectories for a state transfer.
-        """
+
+# **************************
+# State preparation examples
+# **************************
+
+
+class TestStatePrep(TestCase):
+    def test_CNOT_state(self):
+        # Hamiltonian
+        qubits = RWA_Coupled()
+
+        # Counting basis
+        # ^^^^^^^^^^^^^^
+        proj_list = [qt.basis(2, i) * qt.basis(2, j).dag() for i in range(2) for j in range(2)]
+        measure_list = [qt.Qobj(qt.tensor(i, j).full()) for i in proj_list for j in proj_list]
+        # Spin basis
+        # ^^^^^^^^^^
+        # proj_list = [qt.identity(2), qt.sigmax(), qt.sigmay(), qt.sigmaz()]
+        # measure_list = [qt.tensor(i, j) for i in proj_list for j in proj_list]
+
+        # Vectorize
+        A_cts_list = [m4q.vectorize_me(H, measure_list) for H in qubits.H_list]
+
+        # Parameters
+        # **********
+        sat = 2 * np.pi * 0.25
+        clock = m4q.StepClock(dt=0.1, horizon=10, n_steps=50)
+        du = 0.25 * sat
+
         for order in range(1, 3):
             np.random.seed(1)
-            # Parameters
-            # ==========
-            clock = m4q.StepClock(dt=2, horizon=12, n_steps=24)
-            sat = 0.5 * (1 / clock.dt)
-            du = 0.1 * sat
+            # Discretize
+            # ----------
+            A_dst = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
 
-            # Experiment
-            # ==========
-            wq = 2 * np.pi * 0.5 * (1 / clock.dt)
-            freqs = {'w0': wq, 'w1': wq, 'wR': wq}
-            qubit = RWA_Qubit(**freqs, A0=1)
+            # Model
+            # -----
+            dim_lift = len(m4q.create_library(order, qubits.dim_u)[1:])
+            model1 = m4q.DMDc(qubits.dim_x, qubits.dim_x, qubits.dim_x * dim_lift, A_dst)
 
-            # Exact model
-            # -----------
-            # Construct |i><j| basis.
-            measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
-                            for j in range(qubit.dim_s)]
-            A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
-            A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
-
-            # # Add discrepancy to qubit
-            # # ------------------------
-            # freqs['w0'] = freqs['w0']
-            # qubit = RWA_Qubit(**freqs, A0=sat)
-
-            # Cost
-            # ====
-            Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
-            Qf = Q * 1e1
-            R = 1e-2 / sat**2 * np.identity(qubit.dim_u)
-
-            # Set control problem
-            Rx = qt.qip.operations.rx(1e-3)
-            rho0 = Rx * qt.basis(qubit.dim_s, 0).proj() * Rx.dag()
-            rho1 = qt.basis(qubit.dim_s, 1).proj()
-            initial_state = rho0.data.toarray().flatten()
-            target_state = rho1.data.toarray().flatten()
+            # Objective
+            # *********
+            # States
+            # ------
+            Rx1 = qt.qip.operations.rx(-1e-2)
+            Rx2 = qt.qip.operations.rx(1e-2)
+            rho0 = qt.tensor(Rx1 * qt.basis(2, 0).proj() * Rx1.dag(), Rx2 * qt.basis(2, 0).proj() * Rx2.dag())
+            rho1 = qt.tensor(qt.basis(2, 0).proj(), qt.basis(2, 1).proj())
+            initial_state = rho0.full().flatten()
+            target_state = rho1.full().flatten()
 
             # Benchmarks
             # ----------
-            X_bm = np.hstack([target_state.reshape(-1, 1)] * (clock.horizon + 1))
-            U_bm = np.hstack([np.zeros([qubit.dim_u, 1])] * clock.horizon)
+            # Benchmarks are shifted during the run
+            X_bm = np.hstack([target_state[:, None]] * (clock.n_steps + clock.horizon + 1))
+            U_bm = np.hstack([np.zeros((qubits.dim_u, 1))] * (clock.n_steps + clock.horizon))
+
+            # Cost
+            # ----
+            Q = np.zeros((qubits.dim_x, qubits.dim_x))
+            nonzero_cost = [0, 5, 10, 15]
+            for i in nonzero_cost:
+                Q[i, i] = 1
+            qf_val = 1
+            Qf = Q * qf_val
+            r_val = 1e-3  # / sat ** 2
+            R = np.identity(qubits.dim_u) * r_val
+
+            # MPC
+            # ***
+            data, model2, exit_code = m4q.mpc(initial_state, qubits.dim_u, order, X_bm, U_bm, clock, qubits.QE, model1,
+                                              Q, R, Qf, sat=sat, du=du)
+
+            xs, us = data
+            tsplus1 = np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt])
+
+            # Save diagnostics
+            # ================
+            path = './../playground/{}_CNOT/'.format(rootname) + \
+                   '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
+                                                        m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
+            if not os.path.exists(path):
+                os.makedirs(path)
+            transparent = False
+
+            fig, axes = plt.subplots(1, qubits.dim_u, figsize=[4 * 3 + 2, 3])
+            for i in range(qubits.dim_u):
+                ax = axes[i]
+                ax.step(tsplus1, np.hstack([us[i], us[i][-1]]), where='post')
+            fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
+
+            fig, ax = plt.subplots(1, figsize=[4,3])
+            full_rho1 = qt.Qobj(rho1.full())
+            infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(qubits.dim_s, qubits.dim_s)), full_rho1) for x in xs.T]
+            ax.plot(tsplus1, infidelity)
+            ax.set_yscale('log')
+            fig.tight_layout()
+            fig.savefig(path + 'cost_order_{}.png'.format(order), transparent=transparent)
+
+            fig, axes = plt.subplots(1, 4, figsize=[4 * 4 + 3, 3])
+            j = 0
+            for i in range(qubits.dim_x):
+                if i in nonzero_cost:
+                    ax = axes[j]
+                    ax.plot(tsplus1, xs[i].real, c=cmap(j))
+                    j = j + 1
+                    ax.set_ylim([-.1, 1.1])
+            fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
+
+    def test_DRAG_state(self):
+        """
+        Produce a control that looks like the familiar DRAG scheme.
+        """
+        # Parameters
+        # ==========
+        clock = m4q.StepClock(dt=0.25, horizon=16, n_steps=20)
+        # Note: Often sat is defined relative to anharmonicity (~1/10)
+        sat = 2 * np.pi * 0.25
+        du = 0.5 * sat
+
+        # Experiment
+        # ==========
+        anharm = -2 * np.pi * 0.1 * (1 / clock.dt)
+        qubit = RWA_Transmon(alpha=anharm)
+
+        # Initial model
+        # -------------
+        measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
+                        for j in range(qubit.dim_s)]
+        A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
+
+        for order in range(1, 3):
+            np.random.seed(1)
+            A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
+
+            # Cost
+            # ====
+            Q = np.zeros((qubit.dim_x, qubit.dim_x))
+            Q[0, 0] = 1
+            Q[4, 4] = 1
+            Q[8, 8] = 0
+            qf_val = 1
+            Qf = Q * qf_val
+            # Break symmetry?
+            r_val = 1e-3 / sat ** 2
+            R = np.array([[r_val, 0], [0, r_val]])
+
+            # Avoid local min.--perturb. initial state slightly
+            Rx = qt.qip.operations.rx(1e-4)
+            rho0 = qt.basis(qubit.dim_s, 0).proj()
+            rho0.data[:2, :2] = Rx.dag() * rho0[:2, :2] * Rx
+            rho1 = qt.basis(qubit.dim_s, 1).proj()
+            initial_state = rho0.full().flatten()
+            target_state = rho1.full().flatten()
+
+            # Benchmarks
+            # ----------
+            # Benchmarks are shifted along horizons during the run
+            X_bm = np.hstack([target_state[:, None]] * (clock.n_steps + clock.horizon + 1))
+            U_bm = np.hstack([np.zeros((qubit.dim_u, 1))] * (clock.n_steps + clock.horizon))
 
             # Model (n.b. we're not using any data-driven machinery here.)
             # =====
@@ -468,18 +373,125 @@ class TestStatePrep(TestCase):
 
             # Model predictive control
             # ========================
-            data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1,
-                                              Q, R, Qf, sat=sat, du=du)
+            data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1, Q,
+                                              R, Qf, sat=sat, du=du)
+
+            # Save diagnostics
+            # ================
+            path = './../playground/{}_DRAG/alpha_{}/'.format(rootname, m4q.val_to_str(anharm)) + \
+                   '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
+                                                        m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
+            if not os.path.exists(path):
+                os.makedirs(path)
+            transparent=False
+
+            # fig, axes = plot_operator(model2.A, qubit.dim_x)
+            # fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
+
+            xs, us = data
+            fig, axes = plt.subplots(2, 1)
+            ax = axes[0]
+            ilabels = [0, 4, 8]
+            for irow, row in enumerate(xs[:, :-1]):
+                ilabel = 'r{}'.format(np.base_repr(irow, base=3).zfill(2))
+                ax_args = {'marker': '.', 'markerfacecolor': 'None', 'label': ilabel, 'alpha': 1}
+                if irow in ilabels:
+                    ax.plot(clock.ts_sim, row.real, **ax_args)
+            ax.legend()
+            ax.set_ylim([-1.1, 1.1])
+            ax = axes[1]
+            infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(qubit.dim_s, qubit.dim_s)), rho1) for x in xs.T]
+            ax.plot(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), infidelity)
+            ax.set_yscale('log')
+            fig.tight_layout()
+            fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
+
+            fig, axes = plt.subplots(len(us), figsize=(3 * len(us), 3))
+            for irow, row in enumerate(us):
+                ax = axes[irow]
+                ax.step(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), np.hstack([row, row[-1]]), where='post',
+                        color=cmap(irow))
+                max_u = np.max(np.abs(us))
+                ax.set_ylim([-max_u * 1.1, max_u * 1.1])
+            fig.tight_layout()
+            fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
+
+    def test_NOT_state(self):
+        """
+        This code demonstrates some MPC controls and corresponding trajectories for a state transfer.
+
+        For parameters, e.g.: First fix dt = 1ns. Then make the values of the other variables match experimental values
+         based on this scaling.
+        """
+        # Parameters
+        # ==========
+        clock = m4q.StepClock(dt=1, horizon=10, n_steps=20)
+        sat = 2 * np.pi * 0.1 * (1 / clock.dt)
+        du = 0.5 * sat
+
+        # Experiment
+        # ==========
+        wq = 2 * np.pi * 4 * (1 / clock.dt)
+        freqs = {'wQ': wq, 'wD': wq, 'wR': wq}
+        qubit = RWA_Qubit(**freqs)
+
+        # Exact model
+        # -----------
+        # Construct |i><j| basis.
+        measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
+                        for j in range(qubit.dim_s)]
+        A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
+        for order in range(1, 5):
+            np.random.seed(1)
+            A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
+
+            # # Add discrepancy to qubit
+            # # ------------------------
+            freqs['wQ'] = wq * .99
+            qubit = RWA_Qubit(**freqs)
+
+            # Cost
+            # ====
+            Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
+            qf_val = 1
+            Qf = Q * qf_val
+            r_val = 1e-2 / sat ** 2
+            R = r_val * np.identity(qubit.dim_u)
+
+            # Set control problem
+            Rx = qt.qip.operations.rx(1e-4)
+            rho0 = Rx * qt.basis(qubit.dim_s, 0).proj() * Rx.dag()
+            rho1 = qt.basis(qubit.dim_s, 1).proj()
+            initial_state = rho0.data.toarray().flatten()
+            target_state = rho1.data.toarray().flatten()
+
+            # Benchmarks
+            # ----------
+            # Benchmarks are shifted along horizons during the run
+            X_bm = np.hstack([target_state[:, None]] * (clock.n_steps + clock.horizon + 1))
+            U_bm = np.hstack([np.zeros((qubit.dim_u, 1))] * (clock.n_steps + clock.horizon))
+
+            # Model (n.b. we're not using any data-driven machinery here.)
+            # =====
+            dim_lift = len(create_library(order, qubit.dim_u)[1:])
+            model1 = m4q.DMDc(qubit.dim_x, qubit.dim_x, qubit.dim_x * dim_lift, A_init)
+
+            # Model predictive control
+            # ========================
+            data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1, Q,
+                                              R, Qf, sat=sat, du=du)
 
             # DIAGNOSTIC
             # **********
-            path = './../playground/{}_NOT/sat_{}_du_{}_{}/'.format(rootname, sat, du, clock.to_string())
+            path = './../playground/{}_NOT/wQ_{}/'.format(rootname, wq) + \
+                   '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
+                                                        m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
             transparent = False
             if not os.path.exists(path):
                 os.makedirs(path)
 
-            fig, axes = plot_operator(model2.A, qubit.dim_x)
-            fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
+            # fig, axes = plot_operator(model2.A, qubit.dim_x)
+            # fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
 
             xs, us = data
             fig, axes = plt.subplots(2, 1)

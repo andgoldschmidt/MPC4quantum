@@ -31,6 +31,12 @@ class WrapModel:
         # Assumes that the control operator was constructed with [y_dim, krtimes(polyu_dim, dim_x)]
         self.unpacked_N = N_op.reshape(self.dim_x, self.polyu_dim, self.dim_x)
 
+    def f(self, x, u, t):
+        x_shaped = x.reshape(-1, 1)
+        u_shaped = u.reshape(-1, 1)
+        polyu = np.vstack([f(u_shaped) for f in self.fns])
+        return self.A @ x_shaped + self.N @ krtimes(polyu, x_shaped)
+
     def df_dx(self, x, u, t):
         u_shaped = u.reshape(-1, 1)
         # Get B(u) acting on x
@@ -52,15 +58,20 @@ class WrapModel:
     def get_model_along_traj(self, xs, us, ts):
         A = []
         B = []
+        Delta = []
         for i in range(len(ts)):
             A.append(self.df_dx(xs[:, i], us[:, i], ts[i]))
             B.append(self.df_du(xs[:, i], us[:, i], ts[i]))
-        return A, B
+            Pred = A[-1] @ xs[:, i] + B[-1] @ us[:, i]
+            Delta.append(self.f(xs[:, i], us[:, i], ts[i]) - Pred[:, None])
+        return A, B, Delta
 
     def get_model_from_initial(self, xs, us, ts):
         A = [self.df_dx(xs[:, 0], us[:, 0], ts[0])] * len(ts)
         B = [self.df_du(xs[:, 0], us[:, 0], ts[0])] * len(ts)
-        return A, B
+        Pred = A[0] @ xs[:, 0] + B[0] @ us[:, 0]
+        Delta = [self.f(xs[:, 0], us[:, 0], ts[0]) - Pred[:, None]] * len(ts)
+        return A, B, Delta
 
 
 def krtimes(A, B):

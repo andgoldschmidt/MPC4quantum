@@ -1,9 +1,10 @@
 from .lifting import WrapModel, create_library, krtimes
 from .optimization import quad_program
-# from .lqr import quad_program
 
 import numpy as np
 from scipy.interpolate import interp1d
+from scipy.optimize import line_search
+from scipy.sparse import block_diag
 from tqdm.auto import tqdm
 import warnings
 
@@ -29,18 +30,15 @@ class StepClock:
         return np.linspace(self.dt * a_step, self.dt * (a_step + self.horizon), self.horizon, endpoint=False)
 
     def to_string(self):
-        dt_str = ['dt', f'{self.dt:.2E}']
-        horiz_str = ['h', f'{self.horizon:.2E}']
-        ns_str = ['n', f'{self.n_steps:.2E}']
-        res = []
-        for s in [dt_str, horiz_str, ns_str]:
-            name, label = s
-            res.append(name)
-            label = label.replace('E', 'e')
-            label = label.replace('.','d')
-            label = label.replace('-','m').replace('+','')
-            res.append(label)
-        return '_'.join(res)
+        labels = ['dt', val_to_str(self.dt)] + ['h', val_to_str(self.horizon)] + ['n', val_to_str(self.n_steps)]
+        return '_'.join(labels)
+
+
+def val_to_str(val):
+    str_val = f'{val:.1E}'
+    str_val = str_val.replace('E', 'e').replace('.','d')
+    str_val = str_val.replace('-','m').replace('+','')
+    return str_val
 
 
 def shift_guess(data):
@@ -48,7 +46,26 @@ def shift_guess(data):
     return np.hstack([data[:, 1:].reshape(-1, n - 1), data[:, -1].reshape(-1, 1)])
 
 
-def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=None, du=None, max_iter=10,
+def real_to_complex(z):
+    # real vector of length 2n -> complex of length n
+    return z[:len(z)//2] + 1j * z[len(z)//2:]
+
+
+def complex_to_real(z):
+    # complex vector of length n -> real of length 2n
+    return np.concatenate((np.real(z), np.imag(z)))
+
+
+def complex_to_real_op(Z):
+    return np.block([[Z.real, -Z.imag], [Z.imag, Z.real]])
+
+
+def real_to_complex_op(Z):
+    row, col = Z.shape
+    return Z[:row//2, :col//2] + 1j * Z[row//2:, :col//2]
+
+
+def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sat=None, du=None, max_iter=100,
         exit_condition=None, streaming=False, progress_bar=True, verbose=False):
     # Set default mpc exit
     exit_code = 0
@@ -59,50 +76,63 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
     us = [None] * clock.n_steps
 
     # Set guess to initial value (a la SDRE)
+    # Note: Could also use targets. This would lead to traditional MPC.
     X_guess = np.hstack([x0.reshape(-1, 1)] * (clock.horizon + 1))
     U_guess = np.hstack([np.zeros([dim_u, 1])] * clock.horizon)
+
+    # Set initial benchmarks
+    X_htarg = np.atleast_2d(X_targ[:, :clock.horizon + 1])
+    U_htarg = np.atleast_2d(U_targ[:, :clock.horizon])
 
     # Stretch Q, R
     Q_ls = [Q] * clock.horizon
     Q_ls.append(Qf)
     R_ls = [R] * clock.horizon
 
-    # Wrap (A, N) model to permit local approximations
-    # TODO: We want the ability to also use linear models in this way.
+    # Wrap the discretized model to allow for local approximations later
+    # Note 1: We discretize the continuous dynamics, then linearize around the guess. Could invert this.
+    # Note 2: This idea could be improved via automatic differentiation of more mature simulations.
     wrapped_model = WrapModel(*model.get_discrete(), dim_u, order)
 
     # Solve MPC
     # =========
     xs[0] = x0
-    for a_step in tqdm(range(clock.n_steps)) if progress_bar else range(clock.n_steps):
+    for step in tqdm(range(clock.n_steps)) if progress_bar else range(clock.n_steps):
         # Iterative QP
         # ------------
         n_iter = 0
         iqp_exit_condition = False
-        obj_prev = np.infty
+
         # DIAGNOSTIC
-        # _save_control = []
-        # _save_state = []
+        _save_control = []
+        _save_state = []
+        _gradient_list = []
+        _obj_list = []
+
         while not iqp_exit_condition and n_iter < max_iter:
-            A_ls, B_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts_horizon(a_step))
+            A_ls, B_ls, Delta_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts_horizon(step))
 
             # Run QP
             # ^^^^^^
             with warnings.catch_warnings():
-                # Catch deprecation of np.complex
+                # Catch deprecation of np.complex in cvxpy
                 warnings.simplefilter(action="ignore", category=DeprecationWarning)
-                # Catch bad optimization warning
+                # Catch bad optimization warning in cvxpy
                 warnings.simplefilter(action="error", category=UserWarning)
                 try:
-                    u_prev = us[a_step - 1] if a_step > 1 else U_bm[:, 0].reshape(-1, 1)
-                    X_opt, U_opt, obj_val, prob = quad_program(xs[a_step], X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls,
+                    u_prev = us[step - 1] if step > 1 else U_htarg[:, 0].reshape(-1, 1)
+                    # N.b. solving for x, u instead of dx, du.
+                    X_opt, U_opt, obj_val, prob = quad_program(xs[step], X_htarg, U_htarg,
+                                                               Q_ls, R_ls,
+                                                               A_ls, B_ls, Delta_ls,
                                                                u_prev, sat, du, verbose)
                 except Warning as w:
                     print(w)
                     exit_code = 2
                     break
-            # Catch failure
-            # ^^^^^^^^^^^^^
+
+            # Warn if failed convergence
+            # ^^^^^^^^^^^^^^^^^^^^^^^^^^
             if np.isinf(obj_val):
                 warnings.warn("Solution was infinite (failed to converge). Inspect the model for accuracy, "
                               "check if control constraints can regularize the problem, "
@@ -110,83 +140,122 @@ def mpc(x0, dim_u, order, X_bm, U_bm, clock, experiment, model, Q, R, Qf, sat=No
                 exit_code = 3
                 break
 
-            # Check convergence
-            # ^^^^^^^^^^^^^^^^^
-            # Assume that the shifted solutions are not far from the previous optimum; don't re-optimize.
-            # a_step > 1 or
-            if a_step > 1 or obj_prev < obj_val or np.isclose(obj_prev, obj_val, rtol=1e-02, atol=1e-04):
+            # Line search
+            # ^^^^^^^^^^^
+            # Line search looks for an optimal step length alpha in the direction *_opt - *_guess
+            if step > 0:
+                # Assume that the shifted solutions are not far from the optimum. Take the full step.
+                alpha = 1
                 iqp_exit_condition = True
             else:
-                # Update
-                X_guess = X_opt
-                U_guess = U_opt
-                # DIAGNOSTIC
-                # _save_control.append(U_opt)
-                # _save_state.append(X_guess)
-                obj_prev = obj_val
-                n_iter += 1
+                # Constants (convert imaginary to real)
+                Big_Cost = block_diag([complex_to_real_op(iq) for iq in Q_ls] +
+                                      [complex_to_real_op(ir) for ir in R_ls]).tocsr()
+                Z_htarg = np.concatenate((complex_to_real(X_htarg.flatten()), complex_to_real(U_htarg.flatten())))
+                Z_guess = np.concatenate((complex_to_real(X_guess.flatten()), complex_to_real(U_guess.flatten())))
+                Z_opt = np.concatenate((complex_to_real(X_opt.flatten()), complex_to_real(U_opt.flatten())))
+
+                def fn(Z):
+                    return (Z - Z_htarg) @ Big_Cost.dot(Z - Z_htarg) / 2
+
+                def grad_fn(Z):
+                    return (Big_Cost + Big_Cost.T).dot(Z - Z_htarg) / 2
+
+                def hess_fn(Delta_Z):
+                    return (Big_Cost + Big_Cost.T)/2
+
+                # Direct line search: d f(z + alpha * dz) / d alpha != 0
+                DZ = Z_opt - Z_guess
+                alpha = - grad_fn(Z_guess).dot(DZ) / (DZ @ hess_fn(Z_guess).dot(DZ))
+   
+                # # DIAGNOSTIC
+                # new_fval = fn(Z_guess + alpha * DZ)
+                # new_slope = grad_fn(Z_guess + alpha * DZ)
+                # _gradient_list.append([np.linalg.norm(new_slope), np.linalg.norm(DZ)])
+                # _obj_list.append([new_fval, alpha])
+
+                # Check convergence (absolute tolerance)
+                if alpha * np.linalg.norm(DZ) < 1e-4:
+                    iqp_exit_condition = True
+
+            # Update guess along step.
+            X_guess = X_guess + alpha * (X_opt - X_guess)
+            U_guess = U_guess + alpha * (U_opt - U_guess)
+            n_iter += 1
+
+            # DIAGNOSTIC
+            _save_control.append(U_guess)
+            _save_state.append(X_guess)
 
         # Status check
         # ------------
-        # Check for a quad_program failure
+        # quad_program failure?
         if exit_code > 0:
             break
 
-        # DIAGNOSTIC
+        # # DIAGNOSTIC
         # if n_iter > 1:
-        #     path = '../playground/2021_08_14_TwoLvl/sequential_dt{}{}/'.format(*str(clock.dt).split('.'))
+        #     path = '../playground/Plot_NMPC/clock_{}/'.format(clock.to_string())
         #     if not os.path.exists(path):
         #         os.makedirs(path)
         #     fig, axes = plt.subplots(2, 1)
-        #     fig.suptitle('order={}, a_step={}, iter={}'.format(order, a_step, n_iter))
+        #     fig.suptitle('order={}, step={}, iter={}'.format(order, step, n_iter))
         #     for i, control in enumerate(_save_control):
         #         ax = axes[0]
         #         ax.step(np.arange(len(control[0]) + 1), np.hstack([control[0], control[0][-1]]), color='k',
         #                 alpha=(i + 1) / (len(_save_control)), where='post')
         #     ax = axes[1]
-        #     ax.plot(np.arange(len(_save_state)), [np.linalg.norm(s - X_bm, 2) for s in _save_state])
-        #     fig.savefig(path + 'seq_order{}_step{}_iter{}.png'.format(order, a_step, n_iter))
+        #     # np.arange(len(_save_state)), [np.linalg.norm(s - X_htarg, 2) for s in _save_state]
+        #     _obj_list = np.vstack(_obj_list).T
+        #     ax.plot(_obj_list[0] * _obj_list[1])
+        #     ax.set_yscale('log')
+        #     fig.savefig(path + 'seq_order{}_step{}_iter{}.png'.format(order, step, n_iter))
 
         # Simulate
         # --------
-        # TODO: This is logical issue. Is xs a list of model state or experiment states? What is experiment's in/out?
+        # TODO: Is xs a list of model states or experiment states? Equiv., what is experiment class's input/output?
         # -- Apply the control to the experiment (lift/proj to convert between model state and simulation state).
         # -- I.e., next_xk = experiment.lift(experiment.simulate(xk, tk, uk))
         # -- Alternatively, close the loop with the model: next_xk = model.predict(xk, krtimes(lift(uk), xk))
-        us[a_step] = U_opt[:, 0]
-        ts_step = clock.ts_step(a_step)
-        u_fns = interp1d(ts_step, np.vstack([us[a_step], us[a_step]]).T, fill_value='extrapolate', kind='previous',
+        us[step] = U_opt[:, 0]
+        ts_step = clock.ts_step(step)
+        u_fns = interp1d(ts_step, np.vstack([us[step], us[step]]).T, fill_value='extrapolate', kind='previous',
                          assume_sorted=True)
-        result = experiment.simulate(xs[a_step], ts_step, u_fns)
-        xs[a_step + 1] = result[:, -1]
+        result = experiment.simulate(xs[step], ts_step, u_fns)
+        xs[step + 1] = result[:, -1]
 
         # Shift guess
         # -----------
         X_guess = shift_guess(X_guess)
         U_guess = shift_guess(U_guess)
 
+        # Shift targets
+        # -------------
+        X_htarg = np.atleast_2d(X_targ[:, step:step + clock.horizon + 1])
+        U_htarg = np.atleast_2d(U_targ[:, step:step + clock.horizon])
+
         # Online model update
         # -------------------
         if streaming:
             fns = create_library(order, dim_u)[1:]
-            lift_u = np.vstack([f(us[a_step].reshape(-1, 1)) for f in fns])
-            model.fit_iteration(xs[a_step + 1], xs[a_step], krtimes(lift_u, xs[a_step].reshape(-1, 1)))
+            lift_u = np.vstack([f(us[step].reshape(-1, 1)) for f in fns])
+            model.fit_iteration(xs[step + 1], xs[step], krtimes(lift_u, xs[step].reshape(-1, 1)))
 
         # Finish
         # ------
         if exit_condition is not None:
-            if exit_condition(xs[a_step + 1], xs[a_step], us[a_step]):
+            if exit_condition(xs[step + 1], xs[step], us[step]):
                 exit_code = 1
                 break
 
     if exit_code == 0:
         # Normal exit
-        clock.set_endsim(a_step + 1)
-        return [np.vstack(xs[:a_step + 2]).T, np.vstack(us[:a_step + 1]).T], model, exit_code
+        clock.set_endsim(step + 1)
+        return [np.vstack(xs[:step + 2]).T, np.vstack(us[:step + 1]).T], model, exit_code
     else:
         # Early exit (ignore last attempted entry)
-        clock.set_endsim(a_step)
-        if a_step == 0:
-            return [np.vstack(xs[:a_step + 1]).T, None], model, exit_code
+        clock.set_endsim(step)
+        if step == 0:
+            return [np.vstack(xs[:step + 1]).T, None], model, exit_code
         else:
-            return [np.vstack(xs[:a_step + 1]).T, np.vstack(us[:a_step]).T], model, exit_code
+            return [np.vstack(xs[:step + 1]).T, np.vstack(us[:step]).T], model, exit_code

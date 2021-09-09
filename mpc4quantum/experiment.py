@@ -183,9 +183,13 @@ class QExperiment(Experiment):
         self.H0 = H0
         self.H1_list = H1_list
         self._me_args = {}
+        self._sigma = 0
 
     def f(self, t, x, u):
         return self.H0 * x + np.sum([H1 * x * u1 for H1, u1 in zip(self.H1_list, u)], axis=0)
+
+    def set_sigma(self, sigma):
+        self._sigma = sigma
 
     def set(self, key, value):
         """
@@ -203,7 +207,7 @@ class QExperiment(Experiment):
         res = mesolve(**self._me_args)
         self.xs = np.array(res.expect) if 'e_ops' in self._me_args \
             else np.vstack([s.full().flatten() for s in res.states]).T
-        return self.xs
+        return self.xs + np.random.randn(*self.xs.shape) * self._sigma
 
 
 def split_blocks(bmatrix, nrows, ncols):
