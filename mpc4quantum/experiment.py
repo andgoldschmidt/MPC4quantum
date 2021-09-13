@@ -207,7 +207,7 @@ class QExperiment(Experiment):
         res = mesolve(**self._me_args)
         self.xs = np.array(res.expect) if 'e_ops' in self._me_args \
             else np.vstack([s.full().flatten() for s in res.states]).T
-        return self.xs + np.random.randn(*self.xs.shape) * self._sigma
+        return self.xs + (np.random.randn(*self.xs.shape) + 1j * np.random.randn(*self.xs.shape)) * self._sigma
 
 
 def split_blocks(bmatrix, nrows, ncols):

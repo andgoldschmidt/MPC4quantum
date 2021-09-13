@@ -16,7 +16,7 @@ imshow_args = {'norm': mpl.colors.SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3), '
 
 # TODO: Cost values need a to_string or ?
 # Set root
-rootname = '2021_09_08_v2'
+rootname = '2021_09_13_OSQP'
 
 
 def plot_operator(A, dim_x, args=imshow_args):
@@ -230,9 +230,9 @@ class TestStatePrep(TestCase):
 
         # Parameters
         # **********
-        sat = 2 * np.pi * 0.25
-        clock = m4q.StepClock(dt=0.1, horizon=10, n_steps=50)
-        du = 0.25 * sat
+        sat = 2 * np.pi * 0.05
+        clock = m4q.StepClock(dt=0.25, horizon=50, n_steps=200)
+        du = 0.5 * sat
 
         for order in range(1, 3):
             np.random.seed(1)
@@ -259,7 +259,10 @@ class TestStatePrep(TestCase):
             # Benchmarks
             # ----------
             # Benchmarks are shifted during the run
-            X_bm = np.hstack([target_state[:, None]] * (clock.n_steps + clock.horizon + 1))
+            incline = [min(1., 2 * n / clock.n_steps) for n in range(clock.n_steps + clock.horizon + 1)]
+            # [1] * (clock.n_steps + clock.horizon + 1)
+            X_bm = np.hstack([target_state[:, None] * i for i in incline])
+            # X_bm = np.hstack([target_state[:, None]] * (clock.n_steps + clock.horizon + 1))
             U_bm = np.hstack([np.zeros((qubits.dim_u, 1))] * (clock.n_steps + clock.horizon))
 
             # Cost
@@ -283,7 +286,7 @@ class TestStatePrep(TestCase):
 
             # Save diagnostics
             # ================
-            path = './../playground/{}_CNOT/'.format(rootname) + \
+            path = './../playground/{}_CNOT_v3/'.format(rootname) + \
                    '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
                                                         m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
             if not os.path.exists(path):

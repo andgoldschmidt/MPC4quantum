@@ -17,6 +17,7 @@ class StepClock:
         self.dt = float(dt)
         self.horizon = horizon
         self.n_steps = n_steps
+        self.measure_freq = 1
         self.ts = np.linspace(0, self.dt * self.n_steps, self.n_steps, endpoint=False)
         self.ts_sim = self.ts
 
@@ -34,6 +35,22 @@ class StepClock:
         return '_'.join(labels)
 
 
+def _diagnostic_plot(savedir, savename, _save_control, _save_state, _obj_list):
+    if not os.path.exists(savedir):
+        os.makedirs(savedir)
+    fig, axes = plt.subplots(2, 1)
+    for i, control in enumerate(_save_control):
+        ax = axes[0]
+        ax.step(np.arange(len(control[0]) + 1), np.hstack([control[0], control[0][-1]]), color='k',
+                alpha=(i + 1) / (len(_save_control)), where='post')
+    ax = axes[1]
+    # np.arange(len(_save_state)), [np.linalg.norm(s - X_htarg, 2) for s in _save_state]
+    _obj_list = np.vstack(_obj_list).T
+    ax.plot(_obj_list[0] * _obj_list[1])
+    ax.set_yscale('log')
+    fig.savefig(savedir + savename)
+
+
 def val_to_str(val):
     str_val = f'{val:.1E}'
     str_val = str_val.replace('E', 'e').replace('.','d')
@@ -44,6 +61,12 @@ def val_to_str(val):
 def shift_guess(data):
     _, n = data.shape
     return np.hstack([data[:, 1:].reshape(-1, n - 1), data[:, -1].reshape(-1, 1)])
+
+
+def isinf_warning():
+    warnings.warn("Solution was infinite (failed to converge). Inspect the model for accuracy, "
+                  "check if control constraints can regularize the problem, "
+                  "or run with verbose=True for more information.")
 
 
 def real_to_complex(z):
@@ -103,11 +126,11 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
         n_iter = 0
         iqp_exit_condition = False
 
-        # DIAGNOSTIC
-        _save_control = []
-        _save_state = []
-        _gradient_list = []
-        _obj_list = []
+        # # DIAGNOSTIC
+        # _save_control = []
+        # _save_state = []
+        # _gradient_list = []
+        # _obj_list = []
 
         while not iqp_exit_condition and n_iter < max_iter:
             A_ls, B_ls, Delta_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts_horizon(step))
@@ -134,15 +157,13 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
             # Warn if failed convergence
             # ^^^^^^^^^^^^^^^^^^^^^^^^^^
             if np.isinf(obj_val):
-                warnings.warn("Solution was infinite (failed to converge). Inspect the model for accuracy, "
-                              "check if control constraints can regularize the problem, "
-                              "or run with verbose=True for more information.")
+                isinf_warning()
                 exit_code = 3
                 break
 
             # Line search
             # ^^^^^^^^^^^
-            # Line search looks for an optimal step length alpha in the direction *_opt - *_guess
+            # Line search looks for an optimal step length alpha in the direction of (opt - guess)
             if step > 0:
                 # Assume that the shifted solutions are not far from the optimum. Take the full step.
                 alpha = 1
@@ -167,14 +188,15 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
                 # Direct line search: d f(z + alpha * dz) / d alpha != 0
                 DZ = Z_opt - Z_guess
                 alpha = - grad_fn(Z_guess).dot(DZ) / (DZ @ hess_fn(Z_guess).dot(DZ))
-   
+
                 # # DIAGNOSTIC
                 # new_fval = fn(Z_guess + alpha * DZ)
                 # new_slope = grad_fn(Z_guess + alpha * DZ)
                 # _gradient_list.append([np.linalg.norm(new_slope), np.linalg.norm(DZ)])
                 # _obj_list.append([new_fval, alpha])
 
-                # Check convergence (absolute tolerance)
+                # Check convergence of steps (absolute tolerance)
+                # TODO: Robustness?
                 if alpha * np.linalg.norm(DZ) < 1e-4:
                     iqp_exit_condition = True
 
@@ -183,9 +205,9 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
             U_guess = U_guess + alpha * (U_opt - U_guess)
             n_iter += 1
 
-            # DIAGNOSTIC
-            _save_control.append(U_guess)
-            _save_state.append(X_guess)
+            # # DIAGNOSTIC
+            # _save_control.append(U_guess)
+            # _save_state.append(X_guess)
 
         # Status check
         # ------------
@@ -194,22 +216,9 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
             break
 
         # # DIAGNOSTIC
-        # if n_iter > 1:
-        #     path = '../playground/Plot_NMPC/clock_{}/'.format(clock.to_string())
-        #     if not os.path.exists(path):
-        #         os.makedirs(path)
-        #     fig, axes = plt.subplots(2, 1)
-        #     fig.suptitle('order={}, step={}, iter={}'.format(order, step, n_iter))
-        #     for i, control in enumerate(_save_control):
-        #         ax = axes[0]
-        #         ax.step(np.arange(len(control[0]) + 1), np.hstack([control[0], control[0][-1]]), color='k',
-        #                 alpha=(i + 1) / (len(_save_control)), where='post')
-        #     ax = axes[1]
-        #     # np.arange(len(_save_state)), [np.linalg.norm(s - X_htarg, 2) for s in _save_state]
-        #     _obj_list = np.vstack(_obj_list).T
-        #     ax.plot(_obj_list[0] * _obj_list[1])
-        #     ax.set_yscale('log')
-        #     fig.savefig(path + 'seq_order{}_step{}_iter{}.png'.format(order, step, n_iter))
+        # savedir = '../playground/Plot_NMPC/clock_{}/'.format(clock.to_string())
+        # savename = 'seq_order{}_step{}_iter{}.png'.format(order, step, n_iter)
+        # _diagnostic_plot(savedir, savename, _save_control, _save_state, _obj_list)
 
         # Simulate
         # --------

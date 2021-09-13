@@ -1,52 +1,110 @@
 import cvxpy as cp
+from .experiment import isqrt
 import numpy as np
 from scipy.sparse import block_diag
 from scipy.linalg import sqrtm
 
 # Notes:
-# 1. Final Q must be nonzero.
-# 2. Guess needs correction?
+# 1. Final Q must be nonzero in CVXPY.
+# 2. CVXPY uses column-major for reshape/vec, Numpy uses row-major.
 
 
-def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, Delta_ls, u_prev=None, sat=None, du=None, verbose=False):
-    # Tutorial version
+def quad_program(x_init, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, Delta_ls, u_prev=None, sat=None, du=None, verbose=False):
     # Shapes
     dim_u, horizon = U_bm.shape
     dim_x, _ = X_bm.shape
+
+    # Parameter
+    X0 = cp.Parameter(dim_x, complex=True)
 
     # Variables
     X = cp.Variable((dim_x, horizon + 1), complex=True)
     U = cp.Variable([dim_u, horizon])
 
     # Init QP
-    cost = 0
-    constr = []
-    constr += [X[:, 0] == x0]
-    # Pin the initial control to u_prev (regularize gradients)
+    objective = 0
+    constraints = []
+    constraints += [X[:, 0] == X0]
+    # Pin the initial control to u_prev (regularize freq.)
     if u_prev is not None and du is not None:
-        constr += [cp.norm(U[:, 0] - u_prev.flatten(), 'inf') <= du]
+        constraints += [-du + u_prev.flatten() <= U[:, 0], U[:, 0] <= du + u_prev.flatten()]
 
     # Horizon
     for t in range(horizon):
-        cost += cp.real(cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]))
-        cost += cp.real(cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t]))
+        objective += cp.real(cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]))
+        objective += cp.real(cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t]))
         # Taylor series:
         # dx/dt = f(x, u)
         #       = f(xg, ug) + df/dx(xg, ug) (x - xg) + df/du(xg, ug) (u - ug) + higher order
         #       = (f(xg, ug) - A xg - B ug) + A x + B u + higher order
-        constr += [X[:, t + 1] == Delta_ls[t].flatten() + A_ls[t] @ X[:, t] + B_ls[t] @ U[:, t]]
-        # Control constraints
-        constr += [cp.norm(U[:, t], 'inf') <= sat]
-        if du is not None and t > 1:
-            constr += [cp.norm(U[:, t] - U[:, t - 1], 'inf') <= du]
+        # Delta := (f(xg, ug) - A xg - B ug)
+        constraints += [X[:, t + 1] == Delta_ls[t].flatten() + A_ls[t] @ X[:, t] + B_ls[t] @ U[:, t]]
+        # Bound control
+        constraints += [-sat * np.ones(dim_u) <= U[:, t], U[:, t] <= sat * np.ones(dim_u)]
+        # Bound state?
+        # xmin = np.zeros(dim_x)
+        # xmax = np.ones(dim_x)
+        # constraints += [-np.ones(dim_x) <= cp.real(X[:, t]), cp.real(X[:, t]) <= xmax]
+
+        # Bound control du?
+        # if du is not None and t > 1:
+        #     constraints += [-du <= U[:, t] - U[:, t - 1],  U[:, t] - U[:, t - 1] <= du]
 
     # Final cost
-    cost += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
+    objective += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
 
     # Solve
-    prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
-    obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)
+    X0.value = x_init
+    prob = cp.Problem(cp.Minimize(cp.real(objective)), constraints)
+    obj_val = prob.solve(solver=cp.OSQP, verbose=verbose)
     return X.value, U.value, obj_val, prob
+
+
+# def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, Delta_ls, u_prev=None, sat=None, du=None, verbose=False):
+#     # Tutorial version
+#     # Shapes
+#     dim_u, horizon = U_bm.shape
+#     dim_x, _ = X_bm.shape
+#
+#     # Variables
+#     X = cp.Variable((dim_x, horizon + 1), complex=True)
+#     U = cp.Variable([dim_u, horizon])
+#
+#     # Init QP
+#     cost = 0
+#     constr = []
+#     constr += [X[:, 0] == x0]
+#     # Pin the initial control to u_prev (regularize gradients)
+#     if u_prev is not None and du is not None:
+#         constr += [cp.norm(U[:, 0] - u_prev.flatten(), 'inf') <= du]
+#
+#     # Horizon
+#     for t in range(horizon):
+#         cost += cp.real(cp.quad_form(X[:, t] - X_bm[:, t], Q_ls[t]))
+#         cost += cp.real(cp.quad_form(U[:, t] - U_bm[:, t], R_ls[t]))
+#         # Taylor series:
+#         # dx/dt = f(x, u)
+#         #       = f(xg, ug) + df/dx(xg, ug) (x - xg) + df/du(xg, ug) (u - ug) + higher order
+#         #       = (f(xg, ug) - A xg - B ug) + A x + B u + higher order
+#         # Delta := (f(xg, ug) - A xg - B ug)
+#         constr += [X[:, t + 1] == Delta_ls[t].flatten() + A_ls[t] @ X[:, t] + B_ls[t] @ U[:, t]]
+#         # Control constraints
+#         constr += [cp.norm(U[:, t], 2) <= sat]
+#         if du is not None and t > 1:
+#             constr += [cp.norm(U[:, t] - U[:, t - 1], 'inf') <= du]
+#         # Density matrix constraints?
+#         # sqrt_x = isqrt(dim_x)
+#         # rho_t1 = cp.reshape(X[:, t + 1], (sqrt_x, sqrt_x), order='C')
+#         # constr += [rho_t1 >> 0]
+#         # constr += [cp.real(cp.trace(rho_t1)) <= 1]
+#
+#     # Final cost
+#     cost += cp.quad_form(X[:, -1] - X_bm[:, -1], Q_ls[-1])
+#
+#     # Solve
+#     prob = cp.Problem(cp.Minimize(cp.real(cost)), constr)
+#     obj_val = prob.solve(solver=cp.ECOS, verbose=verbose)
+#     return X.value, U.value, obj_val, prob
 
 
 # def quad_program(x0, X_bm, U_bm, Q_ls, R_ls, A_ls, B_ls, u_prev=None, sat=None, du=None, verbose=False):

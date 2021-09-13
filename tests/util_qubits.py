@@ -24,10 +24,13 @@ class RWA_Coupled:
 
         I_op = qt.identity(2)
         H0_z12 = qt.Qobj(qt.tensor(qt.sigmaz(), qt.sigmaz()).full())
+        H_y1 = qt.Qobj(qt.tensor(qt.sigmay(), I_op).full())
         H_y2 = qt.Qobj(qt.tensor(I_op, qt.sigmay()).full())
+        # H_x1 = qt.Qobj(qt.tensor(qt.sigmax(), I_op).full())
+        # H_x2 = qt.Qobj(qt.tensor(I_op, qt.sigmax()).full())
         H_z1 = qt.Qobj(qt.tensor(qt.sigmaz(), I_op).full())
-        H_z2 = qt.Qobj(qt.tensor(I_op, qt.sigmaz()).full())
-        self.H_list = [H0_z12, H_y2, H_z1, H_z2]
+        # H_z2 = qt.Qobj(qt.tensor(I_op, qt.sigmaz()).full())
+        self.H_list = [H0_z12, H_y1, H_y2, H_z1]
 
         self.QE = QExperiment(self.H_list[0], [self.H_list[i] for i in range(1, len(self.H_list))])
 
