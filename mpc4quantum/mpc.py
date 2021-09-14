@@ -1,9 +1,8 @@
-from .lifting import WrapModel, create_library, krtimes
-from .optimization import quad_program
+from .linearize import WrapModel, create_library, krtimes
+from .optimize import quad_program
 
 import numpy as np
 from scipy.interpolate import interp1d
-from scipy.optimize import line_search
 from scipy.sparse import block_diag
 from tqdm.auto import tqdm
 import warnings
@@ -25,13 +24,14 @@ class StepClock:
         self.ts_sim = self.ts[:index]
 
     def ts_step(self, a_step):
-        return np.linspace(self.dt * a_step, self.dt * (a_step + 1), 2)
+        return np.linspace(self.dt * (a_step + 1 - self.measure_freq), self.dt * (a_step + 1), self.measure_freq + 1)
 
     def ts_horizon(self, a_step):
         return np.linspace(self.dt * a_step, self.dt * (a_step + self.horizon), self.horizon, endpoint=False)
 
     def to_string(self):
-        labels = ['dt', val_to_str(self.dt)] + ['h', val_to_str(self.horizon)] + ['n', val_to_str(self.n_steps)]
+        labels = ['mf', val_to_str(self.measure_freq)] + ['dt', val_to_str(self.dt)] \
+                 + ['h', val_to_str(self.horizon)] + ['n', val_to_str(self.n_steps)]
         return '_'.join(labels)
 
 
@@ -79,13 +79,40 @@ def complex_to_real(z):
     return np.concatenate((np.real(z), np.imag(z)))
 
 
-def complex_to_real_op(Z):
-    return np.block([[Z.real, -Z.imag], [Z.imag, Z.real]])
+def complex_to_real_op(P):
+    return np.block([[P.real, -P.imag], [P.imag, P.real]])
 
 
-def real_to_complex_op(Z):
-    row, col = Z.shape
-    return Z[:row//2, :col//2] + 1j * Z[row//2:, :col//2]
+def real_to_complex_op(P):
+    row, col = P.shape
+    return P[:row // 2, :col // 2] + 1j * P[row // 2:, :col // 2]
+
+
+def iqp_line_search(Q_ls, R_ls, X_htarg, U_htarg, X_guess, U_guess, X_opt, U_opt):
+    # Constants (convert imaginary to real)
+    Big_Cost = block_diag([complex_to_real_op(iq) for iq in Q_ls] +
+                          [complex_to_real_op(ir) for ir in R_ls]).tocsr()
+    Z_htarg = np.concatenate((complex_to_real(X_htarg.flatten()), complex_to_real(U_htarg.flatten())))
+    Z_guess = np.concatenate((complex_to_real(X_guess.flatten()), complex_to_real(U_guess.flatten())))
+    Z_opt = np.concatenate((complex_to_real(X_opt.flatten()), complex_to_real(U_opt.flatten())))
+
+    def fn(Z):
+        return (Z - Z_htarg) @ Big_Cost.dot(Z - Z_htarg) / 2
+
+    def grad_fn(Z):
+        return (Big_Cost + Big_Cost.T).dot(Z - Z_htarg) / 2
+
+    def hess_fn(Delta_Z):
+        return (Big_Cost + Big_Cost.T) / 2
+
+    # Direct line search: d f(z + alpha * dz) / d alpha != 0
+    # (Could also use scipy.optimize.line_search but hess_fn is fine.)
+    DZ = Z_opt - Z_guess
+    alpha = - grad_fn(Z_guess).dot(DZ) / (DZ @ hess_fn(Z_guess).dot(DZ))
+    new_step = np.linalg.norm(alpha * DZ)
+    new_fval = fn(Z_guess + alpha * DZ)
+    new_slope = grad_fn(Z_guess + alpha * DZ)
+    return alpha, new_step, new_fval, new_slope
 
 
 def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sat=None, du=None, max_iter=100,
@@ -103,9 +130,9 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
     X_guess = np.hstack([x0.reshape(-1, 1)] * (clock.horizon + 1))
     U_guess = np.hstack([np.zeros([dim_u, 1])] * clock.horizon)
 
-    # Set initial benchmarks
-    X_htarg = np.atleast_2d(X_targ[:, :clock.horizon + 1])
-    U_htarg = np.atleast_2d(U_targ[:, :clock.horizon])
+    # Set initial reference trajectory
+    X_ref = np.atleast_2d(X_targ[:, :clock.horizon + 1])
+    U_ref = np.atleast_2d(U_targ[:, :clock.horizon])
 
     # Stretch Q, R
     Q_ls = [Q] * clock.horizon
@@ -133,6 +160,7 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
         # _obj_list = []
 
         while not iqp_exit_condition and n_iter < max_iter:
+            # TODO: Optimal code would account for shift of guess.
             A_ls, B_ls, Delta_ls = wrapped_model.get_model_along_traj(X_guess, U_guess, clock.ts_horizon(step))
 
             # Run QP
@@ -143,9 +171,9 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
                 # Catch bad optimization warning in cvxpy
                 warnings.simplefilter(action="error", category=UserWarning)
                 try:
-                    u_prev = us[step - 1] if step > 1 else U_htarg[:, 0].reshape(-1, 1)
+                    u_prev = us[step - 1] if step > 1 else U_ref[:, 0].reshape(-1, 1)
                     # N.b. solving for x, u instead of dx, du.
-                    X_opt, U_opt, obj_val, prob = quad_program(xs[step], X_htarg, U_htarg,
+                    X_opt, U_opt, obj_val, prob = quad_program(xs[step], X_ref, U_ref,
                                                                Q_ls, R_ls,
                                                                A_ls, B_ls, Delta_ls,
                                                                u_prev, sat, du, verbose)
@@ -169,35 +197,17 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
                 alpha = 1
                 iqp_exit_condition = True
             else:
-                # Constants (convert imaginary to real)
-                Big_Cost = block_diag([complex_to_real_op(iq) for iq in Q_ls] +
-                                      [complex_to_real_op(ir) for ir in R_ls]).tocsr()
-                Z_htarg = np.concatenate((complex_to_real(X_htarg.flatten()), complex_to_real(U_htarg.flatten())))
-                Z_guess = np.concatenate((complex_to_real(X_guess.flatten()), complex_to_real(U_guess.flatten())))
-                Z_opt = np.concatenate((complex_to_real(X_opt.flatten()), complex_to_real(U_opt.flatten())))
-
-                def fn(Z):
-                    return (Z - Z_htarg) @ Big_Cost.dot(Z - Z_htarg) / 2
-
-                def grad_fn(Z):
-                    return (Big_Cost + Big_Cost.T).dot(Z - Z_htarg) / 2
-
-                def hess_fn(Delta_Z):
-                    return (Big_Cost + Big_Cost.T)/2
-
-                # Direct line search: d f(z + alpha * dz) / d alpha != 0
-                DZ = Z_opt - Z_guess
-                alpha = - grad_fn(Z_guess).dot(DZ) / (DZ @ hess_fn(Z_guess).dot(DZ))
+                # Use line search to avoid over-stepping.
+                alpha, new_step, _, _ = iqp_line_search(Q_ls, R_ls, X_ref, U_ref, X_guess, U_guess, X_opt, U_opt)
 
                 # # DIAGNOSTIC
                 # new_fval = fn(Z_guess + alpha * DZ)
                 # new_slope = grad_fn(Z_guess + alpha * DZ)
-                # _gradient_list.append([np.linalg.norm(new_slope), np.linalg.norm(DZ)])
                 # _obj_list.append([new_fval, alpha])
 
-                # Check convergence of steps (absolute tolerance)
+                # Exit if small step (absolute tolerance)
                 # TODO: Robustness?
-                if alpha * np.linalg.norm(DZ) < 1e-4:
+                if new_step < 1e-4:
                     iqp_exit_condition = True
 
             # Update guess along step.
@@ -222,16 +232,25 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
 
         # Simulate
         # --------
-        # TODO: Is xs a list of model states or experiment states? Equiv., what is experiment class's input/output?
-        # -- Apply the control to the experiment (lift/proj to convert between model state and simulation state).
-        # -- I.e., next_xk = experiment.lift(experiment.simulate(xk, tk, uk))
-        # -- Alternatively, close the loop with the model: next_xk = model.predict(xk, krtimes(lift(uk), xk))
+        # xs is a list of experiment (simulation) states. the model applies to possibly lifted (koopman) states.
         us[step] = U_opt[:, 0]
-        ts_step = clock.ts_step(step)
-        u_fns = interp1d(ts_step, np.vstack([us[step], us[step]]).T, fill_value='extrapolate', kind='previous',
-                         assume_sorted=True)
-        result = experiment.simulate(xs[step], ts_step, u_fns)
-        xs[step + 1] = result[:, -1]
+        # check whether to measure the next output
+        if (step + 1) % clock.measure_freq == 0:
+            # -- Apply the control to the experiment.
+            # -- I.e., next_xk = experiment.lift(experiment.simulate(xk, tk, uk))
+            # -- You must be sure to start from the last true measurement.
+            ts_step = clock.ts_step(step)
+            us_step = np.vstack([us[step - j] for j in range(clock.measure_freq)] + [us[step]]).T
+            u_fns = interp1d(ts_step, us_step, fill_value='extrapolate', kind='previous')
+            result = experiment.simulate(xs[step + 1 - clock.measure_freq], ts_step, u_fns)
+            xs[step + 1] = result[:, -1]
+        else:
+            # -- Alternatively, close the loop with the model (lift/proj):
+            # -- next_xk = proj(model.predict(lift(xk), krtimes(lift(uk), lift(xk)))
+            lift_ustep = wrapped_model.lift_u(us[step].reshape(-1, 1))
+            lift_xstep = experiment.lift(xs[step]).reshape(-1, 1)
+            lift_uxstep = krtimes(lift_ustep, lift_xstep)
+            xs[step + 1] = experiment.proj(model.predict(lift_xstep, lift_uxstep)).flatten()
 
         # Shift guess
         # -----------
@@ -240,15 +259,16 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
 
         # Shift targets
         # -------------
-        X_htarg = np.atleast_2d(X_targ[:, step:step + clock.horizon + 1])
-        U_htarg = np.atleast_2d(U_targ[:, step:step + clock.horizon])
+        X_ref = np.atleast_2d(X_targ[:, step:step + clock.horizon + 1])
+        U_ref = np.atleast_2d(U_targ[:, step:step + clock.horizon])
 
         # Online model update
         # -------------------
         if streaming:
-            fns = create_library(order, dim_u)[1:]
-            lift_u = np.vstack([f(us[step].reshape(-1, 1)) for f in fns])
-            model.fit_iteration(xs[step + 1], xs[step], krtimes(lift_u, xs[step].reshape(-1, 1)))
+            lift_ustep = wrapped_model.lift_u(us[step].reshape(-1, 1))
+            lift_xstep = experiment.lift(xs[step]).reshape(-1, 1)
+            lift_uxstep = krtimes(lift_ustep, lift_xstep)
+            model.fit_iteration(experiment.lift(xs[step + 1]).reshape(-1, 1), lift_xstep, lift_uxstep)
 
         # Finish
         # ------

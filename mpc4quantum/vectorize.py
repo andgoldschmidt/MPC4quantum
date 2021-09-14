@@ -2,7 +2,7 @@ import numpy as np
 import qutip as qt
 import itertools as it
 
-from .lifting import create_power_list
+from .linearize import create_power_list
 
 
 def discretize_homogeneous(A_cts_list, dt, order):

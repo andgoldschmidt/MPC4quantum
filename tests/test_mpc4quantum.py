@@ -429,12 +429,12 @@ class TestStatePrep(TestCase):
         # Parameters
         # ==========
         clock = m4q.StepClock(dt=1, horizon=10, n_steps=20)
-        sat = 2 * np.pi * 0.1 * (1 / clock.dt)
+        sat = 2 * np.pi * 0.1
         du = 0.5 * sat
 
         # Experiment
         # ==========
-        wq = 2 * np.pi * 4 * (1 / clock.dt)
+        wq = 2 * np.pi * 4
         freqs = {'wQ': wq, 'wD': wq, 'wR': wq}
         qubit = RWA_Qubit(**freqs)
 
@@ -444,7 +444,7 @@ class TestStatePrep(TestCase):
         measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
                         for j in range(qubit.dim_s)]
         A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
-        for order in range(1, 5):
+        for order in range(1, 3):
             np.random.seed(1)
             A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
 
@@ -486,7 +486,7 @@ class TestStatePrep(TestCase):
 
             # DIAGNOSTIC
             # **********
-            path = './../playground/{}_NOT/wQ_{}/'.format(rootname, wq) + \
+            path = './../playground/{}_NOT/wQ_{}/'.format(rootname, int(wq)) + \
                    '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
                                                         m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
             transparent = False
@@ -505,6 +505,107 @@ class TestStatePrep(TestCase):
             ax = axes[1]
             infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(2, 2)), rho1) for x in xs.T]
             ax.plot(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), infidelity)
+            ax.set_yscale('log')
+            fig.tight_layout()
+            fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
+
+            fig, ax = plt.subplots(1, figsize=(4, 3))
+            for row in us:
+                ax.step(np.hstack([clock.ts_sim, clock.ts_sim[-1]+ clock.dt]), np.hstack([row, row[-1]]), where='post')
+            max_u = np.max(np.abs(us))
+            ax.set_ylim([-max_u * 1.1, max_u * 1.1])
+            fig.tight_layout()
+            fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
+
+    def test_NOT_state_freq(self):
+        """
+        This code demonstrates some MPC controls and corresponding trajectories for a state transfer.
+
+        For parameters, e.g.: First fix dt = 1ns. Then make the values of the other variables match experimental values
+         based on this scaling.
+        """
+        # Parameters
+        # ==========
+        clock = m4q.StepClock(dt=0.2, horizon=50, n_steps=100)
+        sat = 2 * np.pi * 0.1
+        du = 0.1 * sat
+        clock.measure_freq = 5
+
+        # Experiment
+        # ==========
+        wq = 2 * np.pi * 4
+        freqs = {'wQ': wq, 'wD': wq, 'wR': wq}
+        qubit = RWA_Qubit(**freqs)
+
+        # Exact model
+        # -----------
+        # Construct |i><j| basis.
+        measure_list = [qt.basis(qubit.dim_s, i) * qt.basis(qubit.dim_s, j).dag() for i in range(qubit.dim_s)
+                        for j in range(qubit.dim_s)]
+        A_cts_list = [m4q.vectorize_me(op, measure_list) for op in qubit.H_list]
+        for order in range(1, 3):
+            np.random.seed(1)
+            A_init = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
+
+            # # Add discrepancy to qubit
+            # # ------------------------
+            freqs['wQ'] = wq * .99
+            qubit = RWA_Qubit(**freqs)
+
+            # Cost
+            # ====
+            Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
+            qf_val = 1
+            Qf = Q * qf_val
+            r_val = 1e-2
+            R = r_val * np.identity(qubit.dim_u)
+
+            # Set control problem
+            Rx = qt.qip.operations.rx(1e-4)
+            rho0 = Rx * qt.basis(qubit.dim_s, 0).proj() * Rx.dag()
+            rho1 = qt.basis(qubit.dim_s, 1).proj()
+            initial_state = rho0.data.toarray().flatten()
+            target_state = rho1.data.toarray().flatten()
+
+            # Benchmarks
+            # ----------
+            # Benchmarks are shifted along horizons during the run
+            X_bm = np.hstack([target_state[:, None]] * (clock.n_steps + clock.horizon + 1))
+            U_bm = np.hstack([np.zeros((qubit.dim_u, 1))] * (clock.n_steps + clock.horizon))
+
+            # Model (n.b. we're not using any data-driven machinery here.)
+            # =====
+            dim_lift = len(create_library(order, qubit.dim_u)[1:])
+            model1 = m4q.DMDc(qubit.dim_x, qubit.dim_x, qubit.dim_x * dim_lift, A_init)
+
+            # Model predictive control
+            # ========================
+            data, model2, exit_code = m4q.mpc(initial_state, qubit.dim_u, order, X_bm, U_bm, clock, qubit.QE, model1, Q,
+                                              R, Qf, sat=sat, du=du)
+
+            # DIAGNOSTIC
+            # **********
+            path = './../playground/{}_mfreq_NOT/wQ_{}/'.format(rootname, int(wq)) + \
+                   '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
+                                                        m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
+            transparent = False
+            if not os.path.exists(path):
+                os.makedirs(path)
+
+            # fig, axes = plot_operator(model2.A, qubit.dim_x)
+            # fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
+
+            xs, us = data
+            xs = np.atleast_2d(xs[:, :-1][:, ::clock.measure_freq])
+            ts = clock.ts_sim[::clock.measure_freq]
+            fig, axes = plt.subplots(2, 1)
+            ax = axes[0]
+            for row in xs:
+                ax.plot(ts, row.real, marker='o', markerfacecolor='None')
+            ax.set_ylim([-1.1, 1.1])
+            ax = axes[1]
+            infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(2, 2)), rho1) for x in xs.T]
+            ax.plot(ts, infidelity)
             ax.set_yscale('log')
             fig.tight_layout()
             fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
