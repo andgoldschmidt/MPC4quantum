@@ -116,7 +116,7 @@ def iqp_line_search(Q_ls, R_ls, X_htarg, U_htarg, X_guess, U_guess, X_opt, U_opt
 
 
 def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sat=None, du=None, max_iter=100,
-        exit_condition=None, streaming=False, progress_bar=True, verbose=False):
+        exit_condition=None, streaming=False, warm_start=True, progress_bar=True, verbose=False):
     # Set default mpc exit
     exit_code = 0
 
@@ -192,7 +192,8 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
             # Line search
             # ^^^^^^^^^^^
             # Line search looks for an optimal step length alpha in the direction of (opt - guess)
-            if step > 0:
+            warm_step = 1 if warm_start else np.inf
+            if step > warm_step:
                 # Assume that the shifted solutions are not far from the optimum. Take the full step.
                 alpha = 1
                 iqp_exit_condition = True
