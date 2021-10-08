@@ -4,8 +4,6 @@ from qutip import mesolve, propagator, Qobj, tensor
 from scipy.integrate import solve_ivp
 from scipy.interpolate import interp1d
 
-# TODO: What should simulate return? Proj or lift?
-
 
 class Experiment(ABC):
     """
@@ -177,6 +175,10 @@ def _wrap_us(us):
 class QExperiment(Experiment):
     """
     The QExperiment class implements qutip's mesolve to solve quantum state preparation experiments.
+
+    TODO:
+     - sigma doesn't make much sense, what you want is a confusion matrix acting on the measurement result.
+     - the confusion matrix retains the density matrix structure but with adjusted probability estimates.
     """
     def __init__(self, H0, H1_list):
         super().__init__()
@@ -208,6 +210,77 @@ class QExperiment(Experiment):
         self.xs = np.array(res.expect) if 'e_ops' in self._me_args \
             else np.vstack([s.full().flatten() for s in res.states]).T
         return self.xs + (np.random.randn(*self.xs.shape) + 1j * np.random.randn(*self.xs.shape)) * self._sigma
+
+
+class QCoupledExperiment(QExperiment):
+    """
+    The QExperiment class implements qutip's mesolve to solve quantum state preparation experiments. We also
+    use partial traces to get only the qubit subspaces as the lifted state (I know this is a bit counter to the
+    intent of lifting refering to the creation of many Koopman observables which live in the model space, but
+    this will let us use models defined only in the qubit spaces.
+    """
+    def __init__(self, H0, H1_list):
+        super().__init__()
+
+    @staticmethod
+    def lift(rhoAB_vec):
+        # Get dimensions
+        dim_AB2 = len(rhoAB_vec)
+        dim_AB = isqrt(dim_AB2)
+        # Make an assumption about identical qubits
+        dim_A2 = dim_AB
+        dim_A = isqrt(dim_A2)
+        dim_B = dim_A
+
+        # Partial traces
+        rhoAB_square = rhoAB_vec.reshape(dim_A * dim_B, dim_A * dim_B)
+
+        # Partial trace over B
+        rhoA_square = np.zeros((dim_A, dim_A), dtype=np.complex128)
+        idA = np.identity(dim_A)
+        for i in range(dim_B):
+            ket = np.zeros((dim_B, 1))
+            ket[i] = 1
+            right = np.kron(idA, ket)
+            left = np.kron(idA, ket.T)
+            rhoA_square += left @ rhoAB_square @ right
+
+        # Partial trace over A
+        rhoB_square = np.zeros((dim_B, dim_B), dtype=np.complex128)
+        idB = np.identity(dim_B)
+        for i in range(dim_A):
+            ket = np.zeros((dim_A, 1))
+            ket[i] = 1
+            right = np.kron(ket, idB)
+            left = np.kron(ket.T, idB)
+            rhoB_square += left @ rhoAB_square @ right
+
+        # Stack
+        rhoA_vec = rhoA_square.flatten()
+        rhoB_vec = rhoB_square.flatten()
+        rhoA_rhoB_vec = np.hstack([rhoA_vec, rhoB_vec])
+        return rhoA_rhoB_vec
+
+    @staticmethod
+    def proj(rhoA_rhoB_vec):
+        # Get dimensions
+        dim_A2_B2 = len(rhoA_rhoB_vec)
+        # Make an assumption about identical qubits
+        dim_2A2 = dim_A2_B2
+        dim_A2 = dim_2A2 // 2
+        dim_A = isqrt(dim_A2)
+        dim_B = dim_A
+
+        # Split into two operators
+        rhoA_vec = rhoA_rhoB_vec[:dim_A**2]
+        rhoB_vec = rhoA_rhoB_vec[dim_A**2:]
+        rhoA_square = rhoA_vec.reshape(dim_A, dim_A)
+        rhoB_square = rhoB_vec.reshape(dim_B, dim_B)
+
+        # Compute the tensor product
+        rhoAB_square = np.kron(rhoA_square, rhoB_square)
+        rhoAB_vec = rhoAB_square.flatten()
+        return rhoAB_vec
 
 
 def split_blocks(bmatrix, nrows, ncols):
@@ -260,7 +333,7 @@ class QSynthesis(Experiment):
     def lift(U):
         """
         By way of analogy, the process matrix P is the density matrix rho for a unitary operator U.
-        It is defined under a presumed vectorization of rho using numpy's flatten s.t. P = U \otimes U^*.
+        It is defined under a presumed vectorization of rho using numpy's flatten s.t. P = U 'otimes' U^*.
 
         :param U: A unitary matrix of shape (n^2,).
         :return: The flat process operator (n^4,) associated to the provided unitary.
@@ -273,12 +346,12 @@ class QSynthesis(Experiment):
     @staticmethod
     def proj(P):
         """
-        Shape the process matrix P = U \otimes U^* into a single propagator, U.
+        Shape the process matrix P = U 'otimes' U^* into a single propagator, U.
 
         :param P: The process matrix of shape (n^4,).
         :return: A unitary operator equivalent to P (up to global phase).
         """
-        # Shape the initial condition (U \otimes U^*) into a single propagator, U.
+        # Shape the initial condition (U 'otimes' U^*) into a single propagator, U.
         n = isqrt(isqrt(P.shape[0]))
         blocks = split_blocks(P.reshape(n ** 2, n ** 2), n, n)
         U = np.zeros((n, n))
@@ -291,7 +364,7 @@ class QSynthesis(Experiment):
         return U.flatten()
 
     def simulate(self, x0, ts, us):
-        # The initial condition is a single unitary U (its lifted state is U \otimes U^*)
+        # The initial condition is a single unitary U (its lifted state is U 'otimes' U^*)
         n = self.H0.shape[1]
         x0 = Qobj(self.proj(x0).reshape(n, n))
 
@@ -316,6 +389,6 @@ class QSynthesis(Experiment):
             #  Full multiplication, states might be in tensor product spaces. Qobj to match output of propagator.
             self.xs = [Qobj(xi.full() @ x0.full()) for xi in self.xs]
 
-        # Lift the results (U \otimes U^*)
+        # Lift the results (U 'otimes' U^*)
         self.xs = np.vstack([self.lift(xi.full().flatten()) for xi in self.xs]).T
         return self.xs

@@ -35,6 +35,22 @@ class RWA_Coupled:
         self.QE = QExperiment(self.H_list[0], [self.H_list[i] for i in range(1, len(self.H_list))])
 
 
+class RWA_Coupled_Weak:
+    def __init__(self):
+        self.dim_u = 2
+        self.dim_s = 4
+        self.dim_x = self.dim_s ** 2
+        self.crosstalk = 1e-2
+
+        I_op = qt.identity(2)
+        H0_z12 = 1 / 2 * self.crosstalk * qt.Qobj(qt.tensor(qt.sigmaz(), qt.sigmaz()).full())
+        H_x1 = 1 / 2 * qt.Qobj(qt.tensor(qt.sigmax(), I_op).full())
+        H_x2 = 1 / 2 * qt.Qobj(qt.tensor(I_op, qt.sigmax()).full())
+        self.H_list = [H0_z12, H_x1, H_x2]
+
+        self.QE = QExperiment(self.H_list[0], [self.H_list[i] for i in range(1, len(self.H_list))])
+
+
 class RWA_Qubit:
     def __init__(self, wQ, wD, wR):
         """

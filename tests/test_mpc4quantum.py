@@ -11,12 +11,14 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 cmap = plt.get_cmap('tab10')
 
-# Default args for plot_operator
-imshow_args = {'norm': mpl.colors.SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3), 'cmap': plt.get_cmap('RdBu_r')}
 
 # TODO: Cost values need a to_string or ?
 # Set root
 rootname = '2021_09_13_OSQP'
+
+
+# Default args for plot_operator
+imshow_args = {'norm': mpl.colors.SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3), 'cmap': plt.get_cmap('RdBu_r')}
 
 
 def plot_operator(A, dim_x, args=imshow_args):
@@ -26,7 +28,7 @@ def plot_operator(A, dim_x, args=imshow_args):
     for i in range(dim_l):
         Ai = A.reshape(dim_x, -1, dim_x)[:, i, :]
         ax = axes[0, i]
-        im = ax.imshow(Ai.real, **imshow_args)
+        _ = ax.imshow(Ai.real, **imshow_args)
         ax = axes[1, i]
         im = ax.imshow(Ai.imag, **imshow_args)
     for ax in axes.flatten():
@@ -37,11 +39,10 @@ def plot_operator(A, dim_x, args=imshow_args):
     fig.colorbar(im, cax=cbar_ax)
     return fig, axes
 
+
 # ***********************
 # Gate synthesis examples
 # ***********************
-
-
 class TestGateSynth(TestCase):
     def test_NOT_gate(self):
         for order in range(1, 5):
@@ -141,9 +142,32 @@ class TestGateSynth(TestCase):
 # *******************
 # Functionality tests
 # *******************
-
-
 class TestFunctionality(TestCase):
+    def test_partialTrace(self):
+        """
+        This test looks at whether our partial trace code works.
+        """
+        for ndim in [2, 4]:
+            # Tensor product space
+            a = qt.rand_dm(ndim)
+            b = qt.rand_dm(ndim)
+            c = qt.tensor(a, b)
+
+            ab_vec = m4q.QCoupledExperiment.lift(c.full().flatten())
+            true_ab_vec = np.hstack([a.full().flatten(), b.full().flatten()])
+            assert np.isclose(true_ab_vec, ab_vec).all()
+
+            c_vec = m4q.QCoupledExperiment.proj(ab_vec)
+            lp_c = qt.Qobj(c_vec.reshape(ndim**2, ndim**2))
+            assert np.isclose(c, lp_c).all()
+
+            # Full space
+            d = qt.rand_dm(ndim**2)
+            d_ab_vec = m4q.QCoupledExperiment.lift(d.full().flatten())
+            d_vec = m4q.QCoupledExperiment.proj(d_ab_vec)
+            lp_d = qt.Qobj(d_vec.reshape(ndim ** 2, ndim ** 2))
+            assert not np.isclose(d, lp_d).all()
+
     def test_vectorization(self):
         """
         This test provides a minimal example for generating a trajectory using the model constructed from the
@@ -209,8 +233,6 @@ class TestFunctionality(TestCase):
 # **************************
 # State preparation examples
 # **************************
-
-
 class TestStatePrep(TestCase):
     def test_CNOT_state(self):
         # Hamiltonian
