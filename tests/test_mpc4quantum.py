@@ -3,6 +3,7 @@ from tests import *
 
 import numpy as np
 import qutip as qt
+from scipy.linalg import block_diag
 from unittest import TestCase
 
 # Diagnostic imports
@@ -234,6 +235,152 @@ class TestFunctionality(TestCase):
 # State preparation examples
 # **************************
 class TestStatePrep(TestCase):
+    def test_crosstalk(self):
+        """
+        This one is a bit hacky because we want to pretend our model only operates on the qubit subspaces,
+        even though we have a crosstalk which lifts us to the full space of the coupled qubits.
+        """
+        # Simulation
+        # **********
+        qubits = RWA_Crosstalk(0)
+
+        # Basis (individual qubits)
+        measure_list = [qt.basis(2, i) * qt.basis(2, j).dag() for i in range(2) for j in range(2)]
+
+        # Vectorize
+        A_cts_list_1 = [m4q.vectorize_me(op, measure_list) for op in qubits.H_list_1]
+        A_cts_list_2 = [m4q.vectorize_me(op, measure_list) for op in qubits.H_list_2]
+
+        # Model
+        # *****
+        # Clock
+        # =====
+        clock = m4q.StepClock(dt=0.25, horizon=20, n_steps=75)
+        sat = 2 * np.pi * 0.1
+        du = 0.25 * sat
+
+        # Order
+        # =====
+        order = 1
+
+        # Discretize
+        # ==========
+        # A = [[A1, 0], [0, A2]] acts on [x1, x2]
+        # N1 = [[N1, 0], [0, 0]] acts on u1 [x1, x2]
+        # N2 = [[0, 0], [0, N2]] acts on u2 [x1, x2]
+        # Put all u1 controls first, then all u2 controls
+        A_cts_list = [block_diag(A_cts_list_1[0], A_cts_list_2[0])]
+        n1,_ = A_cts_list_1[0].shape
+        n2,_ = A_cts_list_2[0].shape
+        for i in range(1, len(A_cts_list_1)):
+            N1 = np.block([[A_cts_list_1[i], np.zeros((n1, n2))],
+                           [np.zeros((n2, n1)), np.zeros((n2, n2))]])
+            A_cts_list.append(N1)
+        for i in range(1, len(A_cts_list_2)):
+            N2 = np.block([[np.zeros((n1, n1)), np.zeros((n1, n2))],
+                           [np.zeros((n2, n1)), A_cts_list_2[i]]])
+            A_cts_list.append(N2)
+        A_dst = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
+
+        # DMD
+        # ===
+        # The model state is a stacked qubit 1 and qubit 2 instead of 4^2
+        model_dim_x = 2 * 4
+        dim_lift = len(m4q.create_library(order, qubits.dim_u)[1:])
+        model1 = m4q.DMDc(model_dim_x, model_dim_x, dim_lift * model_dim_x, A_dst)
+
+        # Objective
+        # *********
+        # Stack model states
+        # ------------------
+        Rx1 = qt.qip.operations.rx(-1e-2)
+        Rx2 = qt.qip.operations.rx(1e-2)
+        rho1_init = Rx1 * qt.basis(2, 0).proj() * Rx1.dag()
+        rho2_init = Rx2 * qt.basis(2, 0).proj() * Rx2.dag()
+        rho1_targ = qt.basis(2, 0).proj()
+        rho2_targ = qt.basis(2, 1).proj()
+        # Initial state (in the experiment)
+        initial_state = qt.tensor(rho1_init, rho2_init).full().flatten()
+        # Target state (for model benchmarks)
+        target_state = np.hstack([rho1_targ.full().flatten(), rho2_targ.full().flatten()])
+
+        # Benchmarks
+        # ----------
+        X_bm = np.hstack([target_state[:, None]] * (clock.n_steps + clock.horizon + 1))
+        U_bm = np.hstack([np.zeros((qubits.dim_u, 1))] * (clock.n_steps + clock.horizon))
+
+        # Cost
+        # ----
+        q_Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
+        Q = block_diag(q_Q, q_Q)
+        qf_val = 1
+        Qf = Q * qf_val
+        r_val = 1e-3
+        R = np.identity(qubits.dim_u) * r_val
+
+        # MPC
+        # ***
+        data, model2, exit_code = m4q.mpc(initial_state, qubits.dim_u, order, X_bm, U_bm, clock, qubits.QE, model1,
+                                          Q, R, Qf, sat=sat, du=du, warm_start=False)
+
+        xs, us = data
+        tsplus1 = np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt])
+
+        xs_proj = np.vstack([qubits.QE.lift(xi) for xi in xs.T]).T
+        x1 = xs_proj[:4, :]
+        x2 = xs_proj[4:, :]
+
+        fig, ax = plt.subplots(1)
+        for row in x1:
+            ax.plot(tsplus1, row.real)
+        fig.show()
+
+        fig, ax = plt.subplots(1)
+        for row in x2:
+            ax.plot(tsplus1, row.real)
+        fig.show()
+
+        fig, ax = plt.subplots(1)
+        for row in us:
+            ax.step(tsplus1, np.hstack([row, row[-1]]), where='post')
+        fig.show()
+
+        print('Done')
+        # # DIAGNOSTIC
+        # # **********
+        # path = './../playground/{}_mfreq_NOT/wQ_{}/'.format(rootname, int(wq)) + \
+        #        '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
+        #                                             m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
+        # transparent = False
+        # if not os.path.exists(path):
+        #     os.makedirs(path)
+        #
+        # # fig, axes = plot_operator(model2.A, qubit.dim_x)
+        # # fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
+        #
+        # xs, us = data
+        # xs = np.atleast_2d(xs[:, :-1][:, ::clock.measure_freq])
+        # ts = clock.ts_sim[::clock.measure_freq]
+        # fig, axes = plt.subplots(2, 1)
+        # ax = axes[0]
+        # for row in xs:
+        #     ax.plot(ts, row.real, marker='o', markerfacecolor='None')
+        # ax.set_ylim([-1.1, 1.1])
+        # ax = axes[1]
+        # infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(2, 2)), rho1) for x in xs.T]
+        # ax.plot(ts, infidelity)
+        # ax.set_yscale('log')
+        # fig.tight_layout()
+        # fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
+        #
+        # fig, ax = plt.subplots(1, figsize=(4, 3))
+        # for row in us:
+        #     ax.step(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), np.hstack([row, row[-1]]), where='post')
+        # max_u = np.max(np.abs(us))
+        # ax.set_ylim([-max_u * 1.1, max_u * 1.1])
+        # fig.tight_layout()
+        # fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
+
     def test_CNOT_state(self):
         # Hamiltonian
         qubits = RWA_Coupled()

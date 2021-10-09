@@ -6,6 +6,15 @@ from .linearize import create_power_list
 
 
 def discretize_homogeneous(A_cts_list, dt, order):
+    """
+    Construct an Euler discretization of bilinear dynamics to a specified order.
+    Requires computing commutators.
+
+    :param A_cts_list:
+    :param dt:
+    :param order:
+    :return:
+    """
     # Assume square ops
     dim_x = A_cts_list[0].shape[0]
     id_op = np.identity(dim_x)

@@ -122,12 +122,13 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
 
     # Initialize
     # ==========
+    lift_x0 = experiment.lift(x0)
     xs = [None] * (clock.n_steps + 1)
     us = [None] * clock.n_steps
 
     # Set guess to initial value (a la SDRE)
     # Note: Could also use targets. This would lead to traditional MPC.
-    X_guess = np.hstack([x0.reshape(-1, 1)] * (clock.horizon + 1))
+    X_guess = np.hstack([lift_x0.reshape(-1, 1)] * (clock.horizon + 1))
     U_guess = np.hstack([np.zeros([dim_u, 1])] * clock.horizon)
 
     # Set initial reference trajectory
@@ -172,8 +173,10 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
                 warnings.simplefilter(action="error", category=UserWarning)
                 try:
                     u_prev = us[step - 1] if step > 1 else U_ref[:, 0].reshape(-1, 1)
+                    # Lift current step to model space
+                    lift_xstep = experiment.lift(xs[step])
                     # N.b. solving for x, u instead of dx, du.
-                    X_opt, U_opt, obj_val, prob = quad_program(xs[step], X_ref, U_ref,
+                    X_opt, U_opt, obj_val, prob = quad_program(lift_xstep, X_ref, U_ref,
                                                                Q_ls, R_ls,
                                                                A_ls, B_ls, Delta_ls,
                                                                u_prev, sat, du, verbose)
@@ -238,7 +241,7 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
         # check whether to measure the next output
         if (step + 1) % clock.measure_freq == 0:
             # -- Apply the control to the experiment.
-            # -- I.e., next_xk = experiment.lift(experiment.simulate(xk, tk, uk))
+            # -- I.e., next_xk = experiment.simulate(xk, tk, uk)
             # -- You must be sure to start from the last true measurement.
             ts_step = clock.ts_step(step)
             us_step = np.vstack([us[step - j] for j in range(clock.measure_freq)] + [us[step]]).T

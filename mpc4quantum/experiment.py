@@ -220,7 +220,7 @@ class QCoupledExperiment(QExperiment):
     this will let us use models defined only in the qubit spaces.
     """
     def __init__(self, H0, H1_list):
-        super().__init__()
+        super().__init__(H0, H1_list)
 
     @staticmethod
     def lift(rhoAB_vec):

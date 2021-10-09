@@ -1,4 +1,4 @@
-from mpc4quantum import QExperiment
+from mpc4quantum import QExperiment, QCoupledExperiment
 
 import numpy as np
 import qutip as qt
@@ -32,23 +32,27 @@ class RWA_Coupled:
         # H_z2 = qt.Qobj(qt.tensor(I_op, qt.sigmaz()).full())
         self.H_list = [H0_z12, H_y1, H_y2, H_z1]
 
+        # Add lift/proj features
         self.QE = QExperiment(self.H_list[0], [self.H_list[i] for i in range(1, len(self.H_list))])
 
 
-class RWA_Coupled_Weak:
-    def __init__(self):
+class RWA_Crosstalk:
+    def __init__(self, crosstalk):
         self.dim_u = 2
         self.dim_s = 4
         self.dim_x = self.dim_s ** 2
-        self.crosstalk = 1e-2
+        self.crosstalk = crosstalk
 
         I_op = qt.identity(2)
         H0_z12 = 1 / 2 * self.crosstalk * qt.Qobj(qt.tensor(qt.sigmaz(), qt.sigmaz()).full())
-        H_x1 = 1 / 2 * qt.Qobj(qt.tensor(qt.sigmax(), I_op).full())
-        H_x2 = 1 / 2 * qt.Qobj(qt.tensor(I_op, qt.sigmax()).full())
+        H_x = qt.sigmax()
+        H_x1 = 1 / 2 * qt.Qobj(qt.tensor(H_x, I_op).full())
+        H_x2 = 1 / 2 * qt.Qobj(qt.tensor(I_op, H_x).full())
         self.H_list = [H0_z12, H_x1, H_x2]
+        self.H_list_1 = [0 * H_x, H_x]
+        self.H_list_2 = [0 * H_x, H_x]
 
-        self.QE = QExperiment(self.H_list[0], [self.H_list[i] for i in range(1, len(self.H_list))])
+        self.QE = QCoupledExperiment(self.H_list[0], [self.H_list[i] for i in range(1, len(self.H_list))])
 
 
 class RWA_Qubit:
