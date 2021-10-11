@@ -111,7 +111,9 @@ def multinomial_powers(n, k):
 
 
 def create_power_list(order, dimension):
-    return [p[:-1] for p in multinomial_powers(order, dimension + 1)]
+    # p[:-1], see the docstring of multinomial_powers
+    # p[:-1][::-1], to get right to left ordering; replaces (0,1), (1,0) with (1,0), (0,1)
+    return [p[:-1][::-1] for p in multinomial_powers(order, dimension + 1)]
 
 
 def size_of_library(order, dimension):
@@ -139,6 +141,19 @@ def create_library(order, dimension):
 
 
 def diff_library(order, dimension):
+    """
+    Compute the gradient of the library functions.
+
+    Arguments:
+        order: The maximal order of multinomials to construct in the library.
+        dimension: The number of dimensions in the input space.
+
+    Returns:
+        (tuple)
+        Entry 1: A list of lists. The inner list is the appropriate lambda functions for the whole library for each
+            derivative; the outer list runs over the derivatives taken.
+        Entrt 2: A list of coefficients for each derivative taken.
+    """
     plist = np.vstack(create_power_list(order, dimension)[1:])
     dlist = create_power_list(1, dimension)[1:]
     deriv_powers = [None] * len(dlist)

@@ -144,6 +144,49 @@ class TestGateSynth(TestCase):
 # Functionality tests
 # *******************
 class TestFunctionality(TestCase):
+    def test_discretization(self):
+        """
+        Euler discretization to first order should be (1 + A*dt) and N*dt.
+        If the timestep is one, then the operators should be approximately equal.
+
+        """
+        dt = 1
+        qubits = RWA_Crosstalk(0)
+        measure_list = [qt.basis(2, i) * qt.basis(2, j).dag() for i in range(2) for j in range(2)]
+
+        # Vectorize
+        A_cts_list_1 = [m4q.vectorize_me(op, measure_list) for op in qubits.H_list_1]
+        A_cts_list_2 = [m4q.vectorize_me(op, measure_list) for op in qubits.H_list_2]
+
+        # Order
+        order = 1
+
+        # Discretize
+        # A = [[A1, 0], [0, A2]] acts on [x1, x2]
+        # N1 = [[N1, 0], [0, 0]] acts on u1*[x1, x2]
+        # N2 = [[0, 0], [0, N2]] acts on u2*[x1, x2]
+        # Put all u1 controls first, then all u2 controls
+        A_cts_list = [block_diag(A_cts_list_1[0], A_cts_list_2[0])]
+        n1, _ = A_cts_list_1[0].shape
+        n2, _ = A_cts_list_2[0].shape
+        for i in range(1, len(A_cts_list_1)):
+            N1 = np.block([[A_cts_list_1[i], np.zeros((n1, n2))],
+                           [np.zeros((n2, n1)), np.zeros((n2, n2))]])
+            A_cts_list.append(N1)
+        for i in range(1, len(A_cts_list_2)):
+            N2 = np.block([[np.zeros((n1, n1)), np.zeros((n1, n2))],
+                           [np.zeros((n2, n1)), A_cts_list_2[i]]])
+            A_cts_list.append(N2)
+        A_dst = m4q.discretize_homogeneous(A_cts_list, dt, order)
+
+        # Construct theoretical equivalent for our simple case
+        A_cts_compare = A_cts_list
+        A_cts_compare[0] = A_cts_compare[0] + np.identity(A_cts_compare[0].shape[0])
+        A_cts_compare = np.hstack(A_cts_compare)
+
+        assert np.isclose(A_dst.real, A_cts_compare.real).all()
+        assert np.isclose(A_dst.imag, A_cts_compare.imag).all()
+
     def test_partialTrace(self):
         """
         This test looks at whether our partial trace code works.
@@ -244,7 +287,7 @@ class TestStatePrep(TestCase):
         # **********
         qubits = RWA_Crosstalk(0)
 
-        # Basis (individual qubits)
+        # Basis (single qubit)
         measure_list = [qt.basis(2, i) * qt.basis(2, j).dag() for i in range(2) for j in range(2)]
 
         # Vectorize
@@ -255,9 +298,10 @@ class TestStatePrep(TestCase):
         # *****
         # Clock
         # =====
-        clock = m4q.StepClock(dt=0.25, horizon=20, n_steps=75)
+        clock = m4q.StepClock(dt=0.5, horizon=20, n_steps=50)
         sat = 2 * np.pi * 0.1
-        du = 0.25 * sat
+        du = 0.25
+        clock.measure_freq = 2
 
         # Order
         # =====
@@ -270,16 +314,16 @@ class TestStatePrep(TestCase):
         # N2 = [[0, 0], [0, N2]] acts on u2 [x1, x2]
         # Put all u1 controls first, then all u2 controls
         A_cts_list = [block_diag(A_cts_list_1[0], A_cts_list_2[0])]
-        n1,_ = A_cts_list_1[0].shape
-        n2,_ = A_cts_list_2[0].shape
-        for i in range(1, len(A_cts_list_1)):
-            N1 = np.block([[A_cts_list_1[i], np.zeros((n1, n2))],
-                           [np.zeros((n2, n1)), np.zeros((n2, n2))]])
-            A_cts_list.append(N1)
+        n1, _ = A_cts_list_1[0].shape
+        n2, _ = A_cts_list_2[0].shape
         for i in range(1, len(A_cts_list_2)):
             N2 = np.block([[np.zeros((n1, n1)), np.zeros((n1, n2))],
                            [np.zeros((n2, n1)), A_cts_list_2[i]]])
             A_cts_list.append(N2)
+        for i in range(1, len(A_cts_list_1)):
+            N1 = np.block([[A_cts_list_1[i], np.zeros((n1, n2))],
+                           [np.zeros((n2, n1)), np.zeros((n2, n2))]])
+            A_cts_list.append(N1)
         A_dst = m4q.discretize_homogeneous(A_cts_list, clock.dt, order)
 
         # DMD
@@ -293,12 +337,12 @@ class TestStatePrep(TestCase):
         # *********
         # Stack model states
         # ------------------
-        Rx1 = qt.qip.operations.rx(-1e-2)
-        Rx2 = qt.qip.operations.rx(1e-2)
+        Rx1 = qt.qip.operations.rx(-1e-3)
+        Rx2 = qt.qip.operations.rx(1e-3)
         rho1_init = Rx1 * qt.basis(2, 0).proj() * Rx1.dag()
         rho2_init = Rx2 * qt.basis(2, 0).proj() * Rx2.dag()
-        rho1_targ = qt.basis(2, 0).proj()
-        rho2_targ = qt.basis(2, 1).proj()
+        rho1_targ = qt.basis(2, 1).proj()
+        rho2_targ = qt.basis(2, 0).proj()  # ((qt.basis(2, 0) + qt.basis(2, 1))/ np.sqrt(2)).proj()
         # Initial state (in the experiment)
         initial_state = qt.tensor(rho1_init, rho2_init).full().flatten()
         # Target state (for model benchmarks)
@@ -311,8 +355,8 @@ class TestStatePrep(TestCase):
 
         # Cost
         # ----
-        q_Q = np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]])
-        Q = block_diag(q_Q, q_Q)
+        Q = block_diag(np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]),
+                       np.array([[1, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 1]]))
         qf_val = 1
         Qf = Q * qf_val
         r_val = 1e-3
@@ -324,62 +368,33 @@ class TestStatePrep(TestCase):
                                           Q, R, Qf, sat=sat, du=du, warm_start=False)
 
         xs, us = data
-        tsplus1 = np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt])
-
         xs_proj = np.vstack([qubits.QE.lift(xi) for xi in xs.T]).T
         x1 = xs_proj[:4, :]
         x2 = xs_proj[4:, :]
+        ts = clock.ts_sim[::clock.measure_freq]
+        tsplus1 = np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt])
 
-        fig, ax = plt.subplots(1)
-        for row in x1:
-            ax.plot(tsplus1, row.real)
-        fig.show()
+        for xs, targ in zip([x1, x2], [rho1_targ, rho2_targ]):
+            xs = np.atleast_2d(xs[:, :-1][:, ::clock.measure_freq])
+            fig, axes = plt.subplots(2, 1, figsize=(6, 4))
+            ax = axes[0]
+            for row in xs:
+                ax.plot(ts, row.real, marker='.', markerfacecolor='None')
+            ax.set_ylim([-1.1, 1.1])
 
-        fig, ax = plt.subplots(1)
-        for row in x2:
-            ax.plot(tsplus1, row.real)
-        fig.show()
+            ax = axes[1]
+            infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(2, 2)), targ) for x in xs.T]
+            ax.plot(ts, infidelity)
+            ax.set_ylim([5e-4, 1.5])
+            ax.set_yscale('log')
 
-        fig, ax = plt.subplots(1)
         for row in us:
+            fig, ax = plt.subplots(1, figsize=(6, 2))
             ax.step(tsplus1, np.hstack([row, row[-1]]), where='post')
-        fig.show()
+            max_u = np.max(np.abs(us))
+            ax.set_ylim([-max_u * 1.1, max_u * 1.1])
 
-        print('Done')
-        # # DIAGNOSTIC
-        # # **********
-        # path = './../playground/{}_mfreq_NOT/wQ_{}/'.format(rootname, int(wq)) + \
-        #        '{}_sat_{}_du_{}_Qf_{}_R_{}/'.format(clock.to_string(), m4q.val_to_str(sat), m4q.val_to_str(du),
-        #                                             m4q.val_to_str(qf_val), m4q.val_to_str(r_val))
-        # transparent = False
-        # if not os.path.exists(path):
-        #     os.makedirs(path)
-        #
-        # # fig, axes = plot_operator(model2.A, qubit.dim_x)
-        # # fig.savefig(path + 'ops_order_{}.png'.format(order), transparent=transparent)
-        #
-        # xs, us = data
-        # xs = np.atleast_2d(xs[:, :-1][:, ::clock.measure_freq])
-        # ts = clock.ts_sim[::clock.measure_freq]
-        # fig, axes = plt.subplots(2, 1)
-        # ax = axes[0]
-        # for row in xs:
-        #     ax.plot(ts, row.real, marker='o', markerfacecolor='None')
-        # ax.set_ylim([-1.1, 1.1])
-        # ax = axes[1]
-        # infidelity = [1 - qt.fidelity(qt.Qobj(x.reshape(2, 2)), rho1) for x in xs.T]
-        # ax.plot(ts, infidelity)
-        # ax.set_yscale('log')
-        # fig.tight_layout()
-        # fig.savefig(path + 'traj_order_{}.png'.format(order), transparent=transparent)
-        #
-        # fig, ax = plt.subplots(1, figsize=(4, 3))
-        # for row in us:
-        #     ax.step(np.hstack([clock.ts_sim, clock.ts_sim[-1] + clock.dt]), np.hstack([row, row[-1]]), where='post')
-        # max_u = np.max(np.abs(us))
-        # ax.set_ylim([-max_u * 1.1, max_u * 1.1])
-        # fig.tight_layout()
-        # fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
+        fig, axes = plot_operator(A_dst, 8)
 
     def test_CNOT_state(self):
         # Hamiltonian
@@ -403,7 +418,7 @@ class TestStatePrep(TestCase):
         clock = m4q.StepClock(dt=0.25, horizon=50, n_steps=200)
         du = 0.5 * sat
 
-        for order in range(1, 3):
+        for order in range(1, 2):
             np.random.seed(1)
             # Discretize
             # ----------

@@ -35,20 +35,30 @@ class StepClock:
         return '_'.join(labels)
 
 
-def _diagnostic_plot(savedir, savename, _save_control, _save_state, _obj_list):
-    if not os.path.exists(savedir):
-        os.makedirs(savedir)
-    fig, axes = plt.subplots(2, 1)
-    for i, control in enumerate(_save_control):
-        ax = axes[0]
-        ax.step(np.arange(len(control[0]) + 1), np.hstack([control[0], control[0][-1]]), color='k',
-                alpha=(i + 1) / (len(_save_control)), where='post')
-    ax = axes[1]
-    # np.arange(len(_save_state)), [np.linalg.norm(s - X_htarg, 2) for s in _save_state]
-    _obj_list = np.vstack(_obj_list).T
-    ax.plot(_obj_list[0] * _obj_list[1])
-    ax.set_yscale('log')
-    fig.savefig(savedir + savename)
+# def _diagnostic_plot(savedir, savename, _save_control, _save_state):
+#     if not os.path.exists(savedir):
+#         os.makedirs(savedir)
+#     fig, axes = plt.subplots(2, 1)
+#     for i, control in enumerate(_save_control):
+#         ax = axes[0]
+#         ax.step(np.arange(len(control[0]) + 1), np.hstack([control[0], control[0][-1]]), color='k',
+#                 alpha=(i + 1) / len(_save_control) / 2, where='post')
+#         ax = axes[1]
+#         ax.step(np.arange(len(control[1]) + 1), np.hstack([control[1], control[1][-1]]), color='k',
+#                 alpha=(i + 1) / len(_save_control) / 2, where='post')
+#     fig.savefig(savedir + savename)
+#
+#     fig, axes = plt.subplots(2, 1)
+#     control = _save_control[-1]
+#     ax = axes[0]
+#     ax.step(np.arange(len(control[0]) + 1), np.hstack([control[0], control[0][-1]]), color='r', where='post')
+#     ax = axes[1]
+#     ax.step(np.arange(len(control[1]) + 1), np.hstack([control[1], control[1][-1]]), color='r', where='post')
+#     fig.savefig(savedir + 'final_' + savename)
+    # # np.arange(len(_save_state)), [np.linalg.norm(s - X_htarg, 2) for s in _save_state]
+    # _obj_list = np.vstack(_obj_list).T
+    # ax.plot(_obj_list[0] * _obj_list[1])
+    # ax.set_yscale('log')
 
 
 def val_to_str(val):
@@ -154,7 +164,7 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
         n_iter = 0
         iqp_exit_condition = False
 
-        # # DIAGNOSTIC
+        # DIAGNOSTIC
         # _save_control = []
         # _save_state = []
         # _gradient_list = []
@@ -219,7 +229,7 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
             U_guess = U_guess + alpha * (U_opt - U_guess)
             n_iter += 1
 
-            # # DIAGNOSTIC
+            # DIAGNOSTIC
             # _save_control.append(U_guess)
             # _save_state.append(X_guess)
 
@@ -230,9 +240,9 @@ def mpc(x0, dim_u, order, X_targ, U_targ, clock, experiment, model, Q, R, Qf, sa
             break
 
         # # DIAGNOSTIC
-        # savedir = '../playground/Plot_NMPC/clock_{}/'.format(clock.to_string())
+        # savedir = '../playground/Plot_NMPC_21_10_09/clock_{}/'.format(clock.to_string())
         # savename = 'seq_order{}_step{}_iter{}.png'.format(order, step, n_iter)
-        # _diagnostic_plot(savedir, savename, _save_control, _save_state, _obj_list)
+        # _diagnostic_plot(savedir, savename, _save_control, _save_state)
 
         # Simulate
         # --------

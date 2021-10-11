@@ -8,18 +8,21 @@ from .linearize import create_power_list
 def discretize_homogeneous(A_cts_list, dt, order):
     """
     Construct an Euler discretization of bilinear dynamics to a specified order.
-    Requires computing commutators.
+    Assumes homogenous in the control.
+    Requires computing commutators like a Dyson series.
 
-    :param A_cts_list:
-    :param dt:
-    :param order:
-    :return:
+    :param A_cts_list: A list of operators that act on the state. The first entry is paired with 1,
+                       the second entry is paried with u_1, and so on.
+    :param dt: Discrete timestep.
+    :param order: Order of dt to take the expansion.
+    :return: The discretization operator which may rely on a lifted control basis if a higher-order discretization
+             was used.
     """
     # Assume square ops
     dim_x = A_cts_list[0].shape[0]
     id_op = np.identity(dim_x)
 
-    # Construct the powers that match the control + state vector
+    # Construct a list of control powers (e.g., if list element is (2,0) that means u1^2, u2^0).
     dim_u = len(A_cts_list) - 1
     powers_list = create_power_list(order, dim_u)
     A_dst_list = [np.zeros((dim_x, dim_x), dtype=complex)] * len(powers_list)
