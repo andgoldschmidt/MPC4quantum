@@ -416,7 +416,7 @@ class TestStatePrep(TestCase):
         # **********
         sat = 2 * np.pi * 0.05
         clock = m4q.StepClock(dt=0.25, horizon=50, n_steps=200)
-        du = 0.5 * sat
+        du = 1 * sat
 
         for order in range(1, 2):
             np.random.seed(1)
@@ -600,6 +600,7 @@ class TestStatePrep(TestCase):
                         color=cmap(irow))
                 max_u = np.max(np.abs(us))
                 ax.set_ylim([-max_u * 1.1, max_u * 1.1])
+            ax.axhline(0,clock.ts_sim[0], clock.ts_sim[-1] + clock.dt)
             fig.tight_layout()
             fig.savefig(path + 'control_order_{}.png'.format(order), transparent=transparent)
 

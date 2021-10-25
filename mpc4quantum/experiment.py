@@ -212,12 +212,35 @@ class QExperiment(Experiment):
         return self.xs + (np.random.randn(*self.xs.shape) + 1j * np.random.randn(*self.xs.shape)) * self._sigma
 
 
+class QExperiment32(QExperiment):
+    """
+    The QExperiment class implements qutip's mesolve to solve quantum state preparation experiments. We also
+    use partial traces to get only the qubit subspaces as the lifted state (I know this is a bit counter to the
+    intent of lifting refering to the creation of many Koopman observables which live in the model space, but
+    this will let us use models defined only in the qubit spaces.)
+    """
+    def __init__(self, H0, H1_list):
+        super().__init__(H0, H1_list)
+
+    @staticmethod
+    def lift(rho33_vec):
+        # Truncate, normalize, and flatten to rho22_vec
+        return Qobj(rho33_vec.reshape(3, 3)[:2, :2]).unit().full().flatten()
+
+    @staticmethod
+    def proj(rho22_vec):
+        # Make 3x3 with zeros
+        rho33 = np.zeros((3, 3), dtype=np.complex128)
+        rho33[:2, :2] = rho22_vec.reshape(2, 2)
+        return rho22_vec.flatten()
+
+
 class QCoupledExperiment(QExperiment):
     """
     The QExperiment class implements qutip's mesolve to solve quantum state preparation experiments. We also
     use partial traces to get only the qubit subspaces as the lifted state (I know this is a bit counter to the
     intent of lifting refering to the creation of many Koopman observables which live in the model space, but
-    this will let us use models defined only in the qubit spaces.
+    this will let us use models defined only in the qubit spaces.)
     """
     def __init__(self, H0, H1_list):
         super().__init__(H0, H1_list)
