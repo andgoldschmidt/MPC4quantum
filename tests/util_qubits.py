@@ -71,7 +71,7 @@ class RWA_Qubit:
         self.dim_u = 1
 
         self._w0 = wQ
-        self._w1 = wD
+        self._wD = wD
         self._wR = wR
 
         H0 = 1 / 2 * (self._w0 - self._wR) * qt.sigmaz()

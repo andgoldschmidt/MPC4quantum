@@ -29,9 +29,9 @@ def plot_operator(A, dim_x, args=imshow_args):
     for i in range(dim_l):
         Ai = A.reshape(dim_x, -1, dim_x)[:, i, :]
         ax = axes[0, i]
-        _ = ax.imshow(Ai.real, **imshow_args)
+        _ = ax.imshow(Ai.real, **args)
         ax = axes[1, i]
-        im = ax.imshow(Ai.imag, **imshow_args)
+        im = ax.imshow(Ai.imag, **args)
     for ax in axes.flatten():
         ax.set_xticks([])
         ax.set_yticks([])
