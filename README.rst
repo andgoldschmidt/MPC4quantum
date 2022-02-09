@@ -11,7 +11,7 @@ Example
 -------
 
 .. figure:: docs/images/mpc.png
-    :width: 400
+    :width: 900
     :align: center
     :alt: A diagram demonstrating the receding horizon optimizations used in model predictive control.
 
